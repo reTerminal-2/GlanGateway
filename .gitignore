@@ -38,5 +38,8 @@ mongodb-data/
 # Temporary and Tooling folders
 .kilo/
 **/.kilo/
+temp-worktree/
+**/temp-worktree/
+
 
 
