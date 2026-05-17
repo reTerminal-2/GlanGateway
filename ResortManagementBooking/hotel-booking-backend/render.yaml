@@ -4,7 +4,7 @@ services:
     name: glan-getaway-backend
     runtime: docker
     plan: free
-    repo: https://github.com/MayoBee/GlanGetaway_2.git
+    repo: https://github.com/reTerminal-2/GlanGateway.git
     rootDir: hotel-booking-backend
     dockerfilePath: Dockerfile
     healthCheckPath: /api/health
