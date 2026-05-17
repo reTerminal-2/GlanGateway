@@ -35,3 +35,8 @@ node_modules
 mongodb-data/
 **/mongodb-data/
 
+# Temporary and Tooling folders
+.kilo/
+**/.kilo/
+
+
