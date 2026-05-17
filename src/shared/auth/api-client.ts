@@ -9,6 +9,7 @@ const getBaseURL = () => {
 
   // Fallback URLs (production domains)
   if (
+    window.location.hostname === "glangateway.netlify.app" ||
     window.location.hostname === "mern-booking-hotel.netlify.app" ||
     window.location.hostname.includes("vercel.app")
   ) {
@@ -19,7 +20,7 @@ const getBaseURL = () => {
     return "http://localhost:5000";
   }
 
-  // Default to production (VPS backend)
+  // Default to production
   return "https://hotel-booking-backend.duckdns.org";
 };
 
