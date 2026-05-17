@@ -1,13 +1,11 @@
 import express, { Request, Response } from "express";
-import mongoose from "mongoose";
 import verifyToken from "../middleware/auth";
-import Hotel from "../models/hotel";
-import Booking from "../models/booking";
+import { supabaseAdmin } from "../core/supabase";
 import { canModifyBooking } from "../services/bookingValidationService";
 
 const router = express.Router();
 
-// /api/my-bookings
+// GET /api/my-bookings
 router.get("/", verifyToken, async (req: Request, res: Response) => {
   try {
     const userId = req.userId;
@@ -16,10 +14,17 @@ router.get("/", verifyToken, async (req: Request, res: Response) => {
       return res.status(401).json({ message: "Unauthorized" });
     }
     
-    // First, get all bookings for this user
-    const bookings = await Booking.find({ userId: new mongoose.Types.ObjectId(userId) })
-      .sort({ createdAt: -1 })
-      .lean();
+    console.log(`📡 Fetching bookings for user ${userId} from Supabase...`);
+    const { data: bookings, error: bookingsError } = await supabaseAdmin
+      .from("bookings")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+    
+    if (bookingsError) {
+      console.error("❌ Failed to fetch bookings from Supabase:", bookingsError);
+      return res.status(500).json({ message: "Unable to fetch bookings" });
+    }
     
     if (!bookings || bookings.length === 0) {
       return res.status(200).json([]);
@@ -29,15 +34,23 @@ router.get("/", verifyToken, async (req: Request, res: Response) => {
     const hotelBookingsMap = new Map();
     
     for (const booking of bookings) {
-      const hotelId = booking.hotelId?.toString();
+      const hotelId = booking.hotel_id;
       if (!hotelId) continue;
       
       if (!hotelBookingsMap.has(hotelId)) {
         // Fetch hotel info
-        const hotel = await Hotel.findById(hotelId).lean();
+        const { data: hotel } = await supabaseAdmin
+          .from("hotels")
+          .select("*")
+          .eq("id", hotelId)
+          .maybeSingle();
+          
         if (hotel) {
           hotelBookingsMap.set(hotelId, {
             ...hotel,
+            _id: hotel.id,
+            userId: hotel.user_id,
+            type: hotel.types,
             bookings: []
           });
         }
@@ -45,16 +58,39 @@ router.get("/", verifyToken, async (req: Request, res: Response) => {
       
       const hotelData = hotelBookingsMap.get(hotelId);
       if (hotelData) {
-        hotelData.bookings.push(booking);
+        // Map fields to what the frontend expects
+        hotelData.bookings.push({
+          ...booking,
+          _id: booking.id,
+          userId: booking.user_id,
+          hotelId: booking.hotel_id,
+          firstName: booking.first_name,
+          lastName: booking.last_name,
+          adultCount: booking.adult_count,
+          childCount: booking.child_count,
+          checkIn: booking.check_in,
+          checkOut: booking.check_out,
+          checkInTime: booking.check_in_time,
+          checkOutTime: booking.check_out_time,
+          totalCost: booking.total_cost,
+          basePrice: booking.base_price,
+          roomIds: booking.room_ids,
+          cottageIds: booking.cottage_ids,
+          selectedRooms: booking.selected_rooms,
+          selectedAmenities: booking.selected_amenities,
+          paymentMethod: booking.payment_method,
+          paymentStatus: booking.payment_status,
+          createdAt: booking.created_at,
+          changeWindowDeadline: booking.change_window_deadline,
+          canModify: booking.can_modify
+        });
       }
     }
     
-    // Convert map to array
     const results = Array.from(hotelBookingsMap.values());
-    
     res.status(200).send(results);
   } catch (error) {
-    console.log("Error fetching bookings:", error);
+    console.error("Error fetching bookings:", error);
     res.status(500).json({ message: "Unable to fetch bookings" });
   }
 });
@@ -70,14 +106,18 @@ router.delete("/:bookingId", verifyToken, async (req: Request, res: Response) =>
     }
     
     // Find the booking
-    const booking = await Booking.findById(bookingId);
+    const { data: booking, error } = await supabaseAdmin
+      .from("bookings")
+      .select("*")
+      .eq("id", bookingId)
+      .maybeSingle();
     
-    if (!booking) {
+    if (error || !booking) {
       return res.status(404).json({ message: "Booking not found" });
     }
     
     // Check if the booking belongs to the user
-    if (booking.userId.toString() !== userId) {
+    if (booking.user_id !== userId) {
       return res.status(403).json({ message: "You can only delete your own bookings" });
     }
     
@@ -89,11 +129,19 @@ router.delete("/:bookingId", verifyToken, async (req: Request, res: Response) =>
     }
     
     // Delete the booking
-    await Booking.findByIdAndDelete(bookingId);
+    const { error: deleteError } = await supabaseAdmin
+      .from("bookings")
+      .delete()
+      .eq("id", bookingId);
+      
+    if (deleteError) {
+      console.error("❌ Failed to delete booking:", deleteError);
+      return res.status(500).json({ message: "Unable to delete booking" });
+    }
     
     res.status(200).json({ message: "Booking deleted successfully" });
   } catch (error) {
-    console.log("Error deleting booking:", error);
+    console.error("Error deleting booking:", error);
     res.status(500).json({ message: "Unable to delete booking" });
   }
 });
@@ -109,19 +157,30 @@ router.put("/:bookingId", verifyToken, async (req: Request, res: Response) => {
     }
     
     // Find the booking
-    const booking = await Booking.findById(bookingId);
+    const { data: booking, error } = await supabaseAdmin
+      .from("bookings")
+      .select("*")
+      .eq("id", bookingId)
+      .maybeSingle();
     
-    if (!booking) {
+    if (error || !booking) {
       return res.status(404).json({ message: "Booking not found" });
     }
     
     // Check if the booking belongs to the user
-    if (booking.userId.toString() !== userId) {
+    if (booking.user_id !== userId) {
       return res.status(403).json({ message: "You can only update your own bookings" });
     }
     
+    // Map to validation schema model
+    const validationModel: any = {
+      status: booking.status,
+      changeWindowDeadline: booking.change_window_deadline ? new Date(booking.change_window_deadline) : undefined,
+      canModify: booking.can_modify
+    };
+    
     // Use centralized 8-hour window check
-    const modificationCheck = canModifyBooking(booking);
+    const modificationCheck = canModifyBooking(validationModel);
     if (!modificationCheck.canModify) {
       return res.status(400).json({ 
         message: modificationCheck.reason,
@@ -130,42 +189,74 @@ router.put("/:bookingId", verifyToken, async (req: Request, res: Response) => {
       });
     }
     
-    // MASS ASSIGNMENT PROTECTION: Whitelist allowed fields
-    const allowedFields = [
-      'firstName',
-      'lastName',
-      'email',
-      'phone',
-      'adultCount',
-      'childCount',
-      'checkIn',
-      'checkOut',
-      'checkInTime',
-      'checkOutTime',
-      'selectedRooms',
-      'selectedCottages',
-      'selectedAmenities',
-      'specialRequests'
-    ];
+    // MASS ASSIGNMENT PROTECTION: Whitelist allowed fields and map to postgres Snake Case
+    const fieldMapping: Record<string, string> = {
+      firstName: 'first_name',
+      lastName: 'last_name',
+      email: 'email',
+      phone: 'phone',
+      adultCount: 'adult_count',
+      childCount: 'child_count',
+      checkIn: 'check_in',
+      checkOut: 'check_out',
+      checkInTime: 'check_in_time',
+      checkOutTime: 'check_out_time',
+      selectedRooms: 'selected_rooms',
+      selectedCottages: 'selected_cottages',
+      selectedAmenities: 'selected_amenities',
+      specialRequests: 'special_requests'
+    };
     
-    // Build update object with only allowed fields
-    const updateData: any = { updatedAt: new Date() };
-    for (const field of allowedFields) {
-      if (req.body[field] !== undefined) {
-        updateData[field] = req.body[field];
+    const updateData: any = { updated_at: new Date().toISOString() };
+    for (const [frontendField, dbColumn] of Object.entries(fieldMapping)) {
+      if (req.body[frontendField] !== undefined) {
+        updateData[dbColumn] = req.body[frontendField];
       }
     }
     
     // Update the booking with whitelisted data only
-    const updatedBooking = await Booking.findByIdAndUpdate(
-      bookingId,
-      updateData,
-      { new: true, runValidators: true }
-    );
+    const { data: updatedBooking, error: updateError } = await supabaseAdmin
+      .from("bookings")
+      .update(updateData)
+      .eq("id", bookingId)
+      .select()
+      .maybeSingle();
+      
+    if (updateError || !updatedBooking) {
+      console.error("❌ Update error:", updateError);
+      return res.status(500).json({ message: "Unable to update booking" });
+    }
     
-    res.status(200).json(updatedBooking);
+    // Format returned booking
+    const formattedBooking = {
+      ...updatedBooking,
+      _id: updatedBooking.id,
+      userId: updatedBooking.user_id,
+      hotelId: updatedBooking.hotel_id,
+      firstName: updatedBooking.first_name,
+      lastName: updatedBooking.last_name,
+      adultCount: updatedBooking.adult_count,
+      childCount: updatedBooking.child_count,
+      checkIn: updatedBooking.check_in,
+      checkOut: updatedBooking.check_out,
+      checkInTime: updatedBooking.check_in_time,
+      checkOutTime: updatedBooking.check_out_time,
+      totalCost: updatedBooking.total_cost,
+      basePrice: updatedBooking.base_price,
+      roomIds: updatedBooking.room_ids,
+      cottageIds: updatedBooking.cottage_ids,
+      selectedRooms: updatedBooking.selected_rooms,
+      selectedAmenities: updatedBooking.selected_amenities,
+      paymentMethod: updatedBooking.payment_method,
+      paymentStatus: updatedBooking.payment_status,
+      createdAt: updatedBooking.created_at,
+      changeWindowDeadline: updatedBooking.change_window_deadline,
+      canModify: updatedBooking.can_modify
+    };
+    
+    res.status(200).json(formattedBooking);
   } catch (error) {
-    console.log("Error updating booking:", error);
+    console.error("Error updating booking:", error);
     res.status(500).json({ message: "Unable to update booking" });
   }
 });

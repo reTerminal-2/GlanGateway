@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import User from "../domains/identity/models/user";
+import { supabaseAdmin } from "../core/supabase";
 
 export interface AuthRequest extends Request {
   userId: string;
@@ -28,6 +28,55 @@ export const verifyToken = (req: Request, res: Response, next: NextFunction) => 
   }
 };
 
+const getPermissionsForRole = (role: string) => {
+  const permissions = {
+    canManageBookings: false,
+    canManageRooms: false,
+    canManagePricing: false,
+    canManageAmenities: false,
+    canManageActivities: false,
+    canViewReports: false,
+    canManageBilling: false,
+    canManageHousekeeping: false,
+    canManageMaintenance: false,
+    canManageUsers: false
+  };
+
+  switch (role) {
+    case "front_desk":
+      permissions.canManageBookings = true;
+      permissions.canViewReports = true;
+      permissions.canManageRooms = true;
+      permissions.canManageBilling = true;
+      permissions.canManageActivities = true;
+      break;
+    case "housekeeping":
+      permissions.canManageHousekeeping = true;
+      permissions.canManageMaintenance = true;
+      break;
+    case "resort_owner":
+      permissions.canManageBookings = true;
+      permissions.canViewReports = true;
+      permissions.canManageRooms = true;
+      permissions.canManageBilling = true;
+      permissions.canManagePricing = true;
+      permissions.canManageAmenities = true;
+      permissions.canManageActivities = true;
+      permissions.canManageHousekeeping = true;
+      permissions.canManageMaintenance = true;
+      permissions.canManageUsers = true;
+      break;
+    case "admin":
+    case "superAdmin":
+      for (const key in permissions) {
+        permissions[key as keyof typeof permissions] = true;
+      }
+      break;
+  }
+
+  return permissions;
+};
+
 export const requireRole = (roles: string[]) => {
   return async (req: AuthRequest, res: Response, next: NextFunction) => {
     try {
@@ -40,10 +89,23 @@ export const requireRole = (roles: string[]) => {
       
       if (!user) {
         // Fallback database lookup for legacy tokens or if not populated
-        user = await User.findById(req.userId).select('role isActive email');
-        if (!user) {
+        const { data: dbUser, error } = await supabaseAdmin
+          .from("users")
+          .select("id, email, role")
+          .eq("id", req.userId)
+          .maybeSingle();
+
+        if (error || !dbUser) {
           return res.status(404).json({ message: "User not found." });
         }
+        
+        user = {
+          id: dbUser.id,
+          email: dbUser.email,
+          role: dbUser.role,
+          isActive: true,
+          permissions: getPermissionsForRole(dbUser.role || "user")
+        };
         req.user = user;
       }
 
@@ -84,10 +146,23 @@ export const requirePermission = (permission: string) => {
       let user = req.user;
       
       if (!user || !user.permissions) {
-        user = await User.findById(req.userId).select('role isActive email permissions');
-        if (!user) {
+        const { data: dbUser, error } = await supabaseAdmin
+          .from("users")
+          .select("id, email, role")
+          .eq("id", req.userId)
+          .maybeSingle();
+
+        if (error || !dbUser) {
           return res.status(404).json({ message: "User not found." });
         }
+
+        user = {
+          id: dbUser.id,
+          email: dbUser.email,
+          role: dbUser.role,
+          isActive: true,
+          permissions: getPermissionsForRole(dbUser.role || "user")
+        };
         req.user = user;
       }
 
@@ -134,18 +209,30 @@ export const requireOwnershipOrAdmin = async (req: AuthRequest, res: Response, n
     let user = req.user;
     
     if (!user) {
-      // Fallback database lookup for legacy tokens
-      user = await User.findById(req.userId).select('role isActive email');
-      if (!user) {
+      const { data: dbUser, error } = await supabaseAdmin
+        .from("users")
+        .select("id, email, role")
+        .eq("id", req.userId)
+        .maybeSingle();
+
+      if (error || !dbUser) {
         return res.status(404).json({ message: "User not found." });
       }
+
+      user = {
+        id: dbUser.id,
+        email: dbUser.email,
+        role: dbUser.role,
+        isActive: true,
+        permissions: getPermissionsForRole(dbUser.role || "user")
+      };
       req.user = user;
     }
 
     const resourceUserId = req.body.userId || req.params.userId;
     
     // Admin can access everything
-    if (user.role === "admin") {
+    if (user.role === "admin" || user.role === "superAdmin") {
       req.user = user;
       return next();
     }

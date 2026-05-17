@@ -2,7 +2,8 @@ import express, { Request, Response } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
-import { v2 as cloudinary } from "cloudinary";
+import { supabase } from "../core/supabase";
+import crypto from "crypto";
 import { verifyToken } from "../middleware/role-based-auth";
 import RolePromotionRequest from "../models/role-promotion-request";
 import User from "../models/user";
@@ -122,32 +123,40 @@ router.post(
         });
       }
 
-      // Upload files to Cloudinary or save locally
+      // Upload files to Supabase Storage or save locally
       const documents: any = {};
       
       for (const fieldName of requiredFiles) {
         const file = files[fieldName][0];
         console.log(`Processing file: ${fieldName}, path: ${file.path}`);
         
-        if (false && process.env.CLOUDINARY_CLOUD_NAME) { // Temporarily disabled for testing
-          // Upload to Cloudinary
-          try {
-            console.log(`Uploading ${fieldName} to Cloudinary...`);
-            const uploadResponse = await cloudinary.uploader.upload(file.path, {
-              folder: `resort-applications/${fieldName}`,
-              resource_type: "auto",
+        try {
+          const ext = path.extname(file.originalname).toLowerCase();
+          const uniqueName = `${crypto.randomUUID()}${ext}`;
+          const fileBuffer = fs.readFileSync(file.path);
+          
+          console.log(`Uploading ${fieldName} to Supabase bucket 'secure-documents'...`);
+          const { data, error } = await supabase.storage
+            .from('secure-documents')
+            .upload(uniqueName, fileBuffer, {
+              contentType: file.mimetype,
+              upsert: true
             });
-            documents[fieldName] = uploadResponse.secure_url;
-            console.log(`Successfully uploaded ${fieldName} to Cloudinary`);
-          } catch (uploadError) {
-            console.error(`Failed to upload ${fieldName} to Cloudinary:`, uploadError);
-            // Fallback to local storage
-            documents[fieldName] = `/uploads/${file.filename}`;
-          }
-        } else {
-          // Save locally
+
+          if (error) throw error;
+
+          // Retrieve public URL from Supabase
+          const { data: { publicUrl } } = supabase.storage
+            .from('secure-documents')
+            .getPublicUrl(uniqueName);
+
+          documents[fieldName] = publicUrl;
+          console.log(`Successfully uploaded ${fieldName} to Supabase Storage`);
+        } catch (uploadError: any) {
+          console.error(`Failed to upload ${fieldName} to Supabase:`, uploadError);
+          // Fallback to local storage
           documents[fieldName] = `/uploads/${file.filename}`;
-          console.log(`Saved ${fieldName} locally: ${documents[fieldName]}`);
+          console.log(`Saved ${fieldName} locally as fallback: ${documents[fieldName]}`);
         }
       }
 

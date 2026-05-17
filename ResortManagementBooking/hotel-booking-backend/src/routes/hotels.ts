@@ -1,73 +1,164 @@
 import express, { Request, Response } from "express";
-import mongoose from "mongoose";
-import Hotel from "../models/hotel";
-import Booking from "../models/booking";
-import User from "../models/user";
-import { BookingType, HotelSearchResponse } from "../types";
-import { param, body, validationResult } from "express-validator";
+import crypto from "crypto";
+import { param, validationResult } from "express-validator";
 import Stripe from "stripe";
 import verifyToken from "../middleware/auth";
+import { supabaseAdmin } from "../core/supabase";
+import { HotelSearchResponse } from "../types";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string);
-
 const router = express.Router();
 
 router.get("/search", async (req: Request, res: Response) => {
   try {
-    const query = constructSearchQuery(req.query);
+    const { destination, stars, maxPrice, sortOption, page } = req.query;
 
-    // Show all resorts that are not explicitly rejected (isApproved !== false)
-    // New resorts default to isApproved: true, so they appear immediately
-    query.isApproved = { $ne: false };
+    let queryBuilder = supabaseAdmin.from("hotels").select("*", { count: "exact" });
 
-    let sortOptions = {};
-    switch (req.query.sortOption) {
-      case "starRating":
-        sortOptions = { starRating: -1 };
-        break;
-      case "pricePerNightAsc":
-        sortOptions = { pricePerNight: 1 };
-        break;
-      case "pricePerNightDesc":
-        sortOptions = { pricePerNight: -1 };
-        break;
+    // Show all resorts that are not explicitly rejected
+    queryBuilder = queryBuilder.neq("status", "declined");
+
+    // Destination filter
+    if (destination && typeof destination === "string" && destination.trim() !== "") {
+      const dest = destination.trim();
+      queryBuilder = queryBuilder.or(`name.ilike.%${dest}%,city.ilike.%${dest}%,country.ilike.%${dest}%`);
     }
 
+    // Stars filter
+    if (stars) {
+      const starRatings = Array.isArray(stars)
+        ? stars.map((s: any) => parseInt(s))
+        : [parseInt(stars as string)];
+      queryBuilder = queryBuilder.in("star_rating", starRatings);
+    }
+
+    // maxPrice filter
+    if (maxPrice) {
+      const maxPriceVal = parseFloat(maxPrice as string);
+      queryBuilder = queryBuilder.or(`day_rate.lte.${maxPriceVal},night_rate.lte.${maxPriceVal}`);
+    }
+
+    // Apply sorting
+    if (sortOption === "starRating") {
+      queryBuilder = queryBuilder.order("star_rating", { ascending: false });
+    } else if (sortOption === "pricePerNightAsc") {
+      queryBuilder = queryBuilder.order("night_rate", { ascending: true });
+    } else if (sortOption === "pricePerNightDesc") {
+      queryBuilder = queryBuilder.order("night_rate", { ascending: false });
+    } else {
+      queryBuilder = queryBuilder.order("last_updated", { ascending: false });
+    }
+
+    // Pagination
     const pageSize = 5;
-    const pageNumber = parseInt(
-      req.query.page ? req.query.page.toString() : "1"
+    const pageNumber = parseInt(page ? page.toString() : "1");
+    const from = (pageNumber - 1) * pageSize;
+    const to = from + pageSize - 1;
+
+    queryBuilder = queryBuilder.range(from, to);
+
+    const { data: hotels, count: total, error } = await queryBuilder;
+
+    if (error) {
+      console.error("❌ Search error:", error);
+      return res.status(500).json({ message: "Something went wrong" });
+    }
+
+    // Reconstruct nested tables (rooms, cottages) for each hotel
+    const hotelsWithSubItems = await Promise.all(
+      (hotels || []).map(async (hotel: any) => {
+        const { data: rooms } = await supabaseAdmin.from("rooms").select("*").eq("hotel_id", hotel.id);
+        const { data: cottages } = await supabaseAdmin.from("cottages").select("*").eq("hotel_id", hotel.id);
+        
+        return {
+          ...hotel,
+          _id: hotel.id,
+          userId: hotel.user_id,
+          type: hotel.types,
+          rooms: (rooms || []).map((r: any) => ({
+            ...r,
+            pricePerNight: r.price_per_night,
+            minOccupancy: r.min_occupancy,
+            maxOccupancy: r.max_occupancy,
+            imageUrl: r.image_url,
+            includedEntranceFee: r.included_entrance_fee
+          })),
+          cottages: (cottages || []).map((c: any) => ({
+            ...c,
+            pricePerNight: c.price_per_night,
+            minOccupancy: c.min_occupancy,
+            maxOccupancy: c.max_occupancy,
+            imageUrl: c.image_url,
+            includedEntranceFee: c.included_entrance_fee
+          }))
+        };
+      })
     );
-    const skip = (pageNumber - 1) * pageSize;
 
-    const hotels = await Hotel.find(query)
-      .sort(sortOptions)
-      .skip(skip)
-      .limit(pageSize);
-
-    const total = await Hotel.countDocuments(query);
+    const totalCount = total || 0;
 
     const response: HotelSearchResponse = {
-      data: hotels,
+      data: hotelsWithSubItems,
       pagination: {
-        total,
+        total: totalCount,
         page: pageNumber,
-        pages: Math.ceil(total / pageSize),
+        pages: Math.ceil(totalCount / pageSize),
       },
     };
 
     res.json(response);
   } catch (error) {
-    console.log("error", error);
+    console.error("❌ Search catch error:", error);
     res.status(500).json({ message: "Something went wrong" });
   }
 });
 
 router.get("/", async (req: Request, res: Response) => {
   try {
-    const hotels = await Hotel.find().sort("-lastUpdated");
-    res.json(hotels);
+    console.log("📡 Public fetching hotels from Supabase...");
+    const { data: hotels, error } = await supabaseAdmin
+      .from("hotels")
+      .select("*")
+      .neq("status", "declined")
+      .order("last_updated", { ascending: false });
+
+    if (error) {
+      console.error("❌ Fetch error:", error);
+      return res.status(500).json({ message: "Error fetching hotels" });
+    }
+
+    const formattedHotels = await Promise.all(
+      (hotels || []).map(async (h: any) => {
+        const { data: rooms } = await supabaseAdmin.from("rooms").select("*").eq("hotel_id", h.id);
+        const { data: cottages } = await supabaseAdmin.from("cottages").select("*").eq("hotel_id", h.id);
+        return {
+          ...h,
+          _id: h.id,
+          userId: h.user_id,
+          type: h.types,
+          rooms: (rooms || []).map((r: any) => ({
+            ...r,
+            pricePerNight: r.price_per_night,
+            minOccupancy: r.min_occupancy,
+            maxOccupancy: r.max_occupancy,
+            imageUrl: r.image_url,
+            includedEntranceFee: r.included_entrance_fee
+          })),
+          cottages: (cottages || []).map((c: any) => ({
+            ...c,
+            pricePerNight: c.price_per_night,
+            minOccupancy: c.min_occupancy,
+            maxOccupancy: c.max_occupancy,
+            imageUrl: c.image_url,
+            includedEntranceFee: c.included_entrance_fee
+          }))
+        };
+      })
+    );
+
+    res.json(formattedHotels);
   } catch (error) {
-    console.log("error", error);
+    console.error("error", error);
     res.status(500).json({ message: "Error fetching hotels" });
   }
 });
@@ -84,10 +175,65 @@ router.get(
     const id = req.params.id.toString();
 
     try {
-      const hotel = await Hotel.findById(id);
-      res.json(hotel);
+      console.log(`📡 Public fetching hotel details for ID: ${id}`);
+      const { data: hotel, error } = await supabaseAdmin
+        .from("hotels")
+        .select("*")
+        .eq("id", id)
+        .maybeSingle();
+
+      if (error) {
+        console.error("❌ Detail error:", error);
+        return res.status(500).json({ message: "Error fetching hotel" });
+      }
+
+      if (!hotel) {
+        return res.status(404).json({ message: "Hotel not found" });
+      }
+
+      const { data: rooms } = await supabaseAdmin.from("rooms").select("*").eq("hotel_id", id);
+      const { data: cottages } = await supabaseAdmin.from("cottages").select("*").eq("hotel_id", id);
+      const { data: amenities } = await supabaseAdmin.from("amenities").select("*").eq("hotel_id", id);
+      const { data: packages } = await supabaseAdmin.from("packages").select("*").eq("hotel_id", id);
+
+      const formattedHotel = {
+        ...hotel,
+        _id: hotel.id,
+        userId: hotel.user_id,
+        type: hotel.types,
+        rooms: (rooms || []).map((r: any) => ({
+          ...r,
+          pricePerNight: r.price_per_night,
+          minOccupancy: r.min_occupancy,
+          maxOccupancy: r.max_occupancy,
+          imageUrl: r.image_url,
+          includedEntranceFee: r.included_entrance_fee
+        })),
+        cottages: (cottages || []).map((c: any) => ({
+          ...c,
+          pricePerNight: c.price_per_night,
+          minOccupancy: c.min_occupancy,
+          maxOccupancy: c.max_occupancy,
+          imageUrl: c.image_url,
+          includedEntranceFee: c.included_entrance_fee
+        })),
+        amenities: (amenities || []).map((a: any) => ({
+          ...a,
+          imageUrl: a.image_url
+        })),
+        packages: (packages || []).map((p: any) => ({
+          ...p,
+          imageUrl: p.image_url,
+          includedCottages: p.included_cottages,
+          includedRooms: p.included_rooms,
+          includedAmenities: p.included_amenities,
+          includedChildEntranceFee: p.included_child_entrance_fee
+        }))
+      };
+
+      res.json(formattedHotel);
     } catch (error) {
-      console.log(error);
+      console.error(error);
       res.status(500).json({ message: "Error fetching hotel" });
     }
   }
@@ -100,14 +246,18 @@ router.post(
     const { numberOfNights } = req.body;
     const hotelId = req.params.hotelId;
 
-    // Use lean() for faster query - exclude nested arrays to avoid path collision with includedEntranceFee
-    // Using only exclusion to avoid "Cannot do exclusion on field rooms in inclusion projection" error
-    const hotel = await Hotel.findById(hotelId).select('-rooms -cottages -amenities -packages -childEntranceFee').lean();
-    if (!hotel) {
+    const { data: hotel, error } = await supabaseAdmin
+      .from("hotels")
+      .select("*")
+      .eq("id", hotelId)
+      .maybeSingle();
+
+    if (error || !hotel) {
       return res.status(400).json({ message: "Hotel not found" });
     }
 
-    const totalCost = numberOfNights > 0 ? hotel.nightRate * numberOfNights : hotel.nightRate;
+    const nightRate = Number(hotel.night_rate) || 0;
+    const totalCost = numberOfNights > 0 ? nightRate * numberOfNights : nightRate;
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount: totalCost * 100,
@@ -136,10 +286,6 @@ router.post(
   "/:hotelId/bookings",
   verifyToken,
   async (req: Request, res: Response) => {
-
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    
     try {
       const paymentIntentId = req.body.paymentIntentId;
 
@@ -148,8 +294,6 @@ router.post(
       );
 
       if (!paymentIntent) {
-        await session.abortTransaction();
-        session.endSession();
         return res.status(400).json({ message: "payment intent not found" });
       }
 
@@ -157,149 +301,110 @@ router.post(
         paymentIntent.metadata.hotelId !== req.params.hotelId ||
         paymentIntent.metadata.userId !== req.userId
       ) {
-        await session.abortTransaction();
-        session.endSession();
         return res.status(400).json({ message: "payment intent mismatch" });
       }
 
       if (paymentIntent.status !== "succeeded") {
-        await session.abortTransaction();
-        session.endSession();
         return res.status(400).json({
           message: `payment intent not succeeded. Status: ${paymentIntent.status}`,
         });
       }
 
-      const newBooking: BookingType = {
-        ...req.body,
-        userId: req.userId,
-        hotelId: req.params.hotelId,
-        paymentMethod: "card", // Set payment method for credit card bookings
-        createdAt: new Date(), // Add booking creation timestamp
-        status: "confirmed", // Set initial status
-        paymentStatus: "paid", // Set payment status since payment succeeded
+      const bookingId = crypto.randomUUID();
+      const checkInDate = new Date(req.body.checkIn).toISOString();
+      const checkOutDate = new Date(req.body.checkOut).toISOString();
+
+      const newBooking = {
+        id: bookingId,
+        user_id: req.userId,
+        hotel_id: req.params.hotelId,
+        first_name: req.body.firstName,
+        last_name: req.body.lastName,
+        email: req.body.email,
+        phone: req.body.phone || "",
+        adult_count: Number(req.body.adultCount) || 1,
+        child_count: Number(req.body.childCount) || 0,
+        check_in: checkInDate,
+        check_out: checkOutDate,
+        check_in_time: req.body.checkInTime || "12:00",
+        check_out_time: req.body.checkOutTime || "11:00",
+        total_cost: Number(req.body.totalCost),
+        base_price: Number(req.body.basePrice) || Number(req.body.totalCost),
+        room_ids: req.body.roomIds || [],
+        cottage_ids: req.body.cottageIds || [],
+        selected_rooms: req.body.selectedRooms || [],
+        selected_amenities: req.body.selectedAmenities || [],
+        status: "confirmed",
+        payment_status: "paid",
+        payment_method: "card",
+        is_pwd_booking: req.body.isPwdBooking || false,
+        is_senior_citizen_booking: req.body.isSeniorCitizenBooking || false,
+        discount_applied: req.body.discountApplied || { type: null, percentage: 0, amount: 0 }
       };
 
-      console.log("Creating booking with data:", JSON.stringify(newBooking, null, 2));
+      console.log("📡 Creating booking in Supabase public.bookings...");
+      const { error: bookingInsertError } = await supabaseAdmin
+        .from("bookings")
+        .insert(newBooking);
 
-      // Create booking in separate collection within transaction
-      const booking = new Booking(newBooking);
-      await booking.save({ session });
+      if (bookingInsertError) {
+        console.error("❌ Supabase booking insert error:", bookingInsertError);
+        return res.status(500).json({ message: "Failed to create booking" });
+      }
 
-      // Update hotel analytics within transaction
-      await Hotel.findByIdAndUpdate(
-        req.params.hotelId,
-        {
-          $inc: {
-            totalBookings: 1,
-            totalRevenue: newBooking.totalCost,
-          },
-        },
-        { session }
-      );
+      // Update hotel analytics
+      const { data: currentHotel } = await supabaseAdmin
+        .from("hotels")
+        .select("total_bookings, total_revenue")
+        .eq("id", req.params.hotelId)
+        .maybeSingle();
 
-      // Update user analytics within transaction
-      await User.findByIdAndUpdate(
-        req.userId,
-        {
-          $inc: {
-            totalBookings: 1,
-            totalSpent: newBooking.totalCost,
-          },
-        },
-        { session }
-      );
+      const newHotelBookings = (currentHotel?.total_bookings || 0) + 1;
+      const newHotelRevenue = Number(currentHotel?.total_revenue || 0) + Number(req.body.totalCost);
 
-      // Commit transaction
-      await session.commitTransaction();
-      session.endSession();
+      await supabaseAdmin
+        .from("hotels")
+        .update({
+          total_bookings: newHotelBookings,
+          total_revenue: newHotelRevenue
+        })
+        .eq("id", req.params.hotelId);
 
-      console.log("✅ Booking created successfully:", booking._id);
+      // Update user analytics
+      const { data: currentUser } = await supabaseAdmin
+        .from("users")
+        .select("total_bookings, total_spent")
+        .eq("id", req.userId)
+        .maybeSingle();
+
+      const newUserBookings = (currentUser?.total_bookings || 0) + 1;
+      const newUserSpent = Number(currentUser?.total_spent || 0) + Number(req.body.totalCost);
+
+      await supabaseAdmin
+        .from("users")
+        .update({
+          total_bookings: newUserBookings,
+          total_spent: newUserSpent
+        })
+        .eq("id", req.userId);
+
+      console.log("✅ Booking created successfully:", bookingId);
       res.status(200).json({ 
         message: "Booking created successfully",
-        bookingId: booking._id,
-        booking: booking
+        bookingId: bookingId,
+        booking: {
+          ...newBooking,
+          _id: bookingId
+        }
       });
-    } catch (error) {
-      await session.abortTransaction();
-      session.endSession();
+    } catch (error: any) {
       console.error("Booking creation error:", error);
-      
-      // Provide more specific error messages
-      if (error.name === 'ValidationError') {
-        return res.status(400).json({ 
-          message: "Invalid booking data", 
-          details: Object.values(error.errors).map((err: any) => err.message).join(', ')
-        });
-      }
-      
       res.status(500).json({ 
         message: "Failed to create booking. Please try again.",
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        error: error.message
       });
     }
   }
 );
-
-const constructSearchQuery = (queryParams: any) => {
-  let constructedQuery: any = {};
-
-  // If no destination is provided, don't add destination filter
-  // This will return all approved resorts
-  if (queryParams.destination && queryParams.destination.trim() !== "") {
-    const destination = queryParams.destination.trim();
-
-    constructedQuery.$or = [
-      { name: { $regex: destination, $options: "i" } },
-      { city: { $regex: destination, $options: "i" } },
-      { country: { $regex: destination, $options: "i" } },
-      { type: { $regex: destination, $options: "i" } },
-    ];
-  }
-
-  if (queryParams.adultCount) {
-    constructedQuery.adultCount = {
-      $gte: parseInt(queryParams.adultCount),
-    };
-  }
-
-  if (queryParams.childCount) {
-    constructedQuery.childCount = {
-      $gte: parseInt(queryParams.childCount),
-    };
-  }
-
-  if (queryParams.facilities) {
-    constructedQuery.facilities = {
-      $all: Array.isArray(queryParams.facilities)
-        ? queryParams.facilities
-        : [queryParams.facilities],
-    };
-  }
-
-  if (queryParams.types) {
-    constructedQuery.type = {
-      $in: Array.isArray(queryParams.types)
-        ? queryParams.types
-        : [queryParams.types],
-    };
-  }
-
-  if (queryParams.stars) {
-    const starRatings = Array.isArray(queryParams.stars)
-      ? queryParams.stars.map((star: string) => parseInt(star))
-      : parseInt(queryParams.stars);
-
-    constructedQuery.starRating = { $in: starRatings };
-  }
-
-  if (queryParams.maxPrice) {
-    constructedQuery.pricePerNight = {
-      $lte: parseInt(queryParams.maxPrice).toString(),
-    };
-  }
-
-  return constructedQuery;
-};
 
 export default router;

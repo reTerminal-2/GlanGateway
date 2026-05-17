@@ -30,3 +30,8 @@ node_modules
 
 .vercel
 .env*.local
+
+# Database data folders
+mongodb-data/
+**/mongodb-data/
+

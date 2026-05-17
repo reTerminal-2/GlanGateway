@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { v2 as cloudinary } from 'cloudinary';
+import { supabaseAdmin } from '../core/supabase';
 
 interface UploadedFile {
   originalname: string;
@@ -20,61 +20,15 @@ class ImageService {
   private baseUrl: string;
 
   constructor() {
-    // Set upload directory - works for both development and compiled environments
-    // From dist/src/services or src/services, go up to project root and then to uploads/
-    // In development: src/services -> src -> project root -> uploads
-    // In production: dist/src/services -> dist/src -> dist -> project root -> uploads
-
     const isProduction = __dirname.includes('dist');
     if (isProduction) {
-      // From dist/src/services: go up to dist, then up to project root, then to uploads
       this.uploadDir = path.join(__dirname, '..', '..', '..', 'uploads');
     } else {
-      // From src/services: go up to src, then up to project root, then to uploads
       this.uploadDir = path.join(__dirname, '..', '..', 'uploads');
     }
 
     this.baseUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 5000}`;
-
-    // Configure Cloudinary if available
-    this.configureCloudinary();
-
-    // Ensure upload directory exists
     this.ensureUploadDir();
-  }
-
-  private configureCloudinary(): void {
-    const cloudinaryCloudName = process.env.CLOUDINARY_CLOUD_NAME;
-    const cloudinaryApiKey = process.env.CLOUDINARY_API_KEY;
-    const cloudinaryApiSecret = process.env.CLOUDINARY_API_SECRET;
-
-    const isCloudinaryConfigured =
-      cloudinaryCloudName &&
-      cloudinaryApiKey &&
-      cloudinaryApiSecret &&
-      !cloudinaryCloudName.includes('your-') &&
-      !cloudinaryApiKey.includes('your-') &&
-      !cloudinaryApiSecret.includes('your-');
-
-    if (isCloudinaryConfigured) {
-      cloudinary.config({
-        cloud_name: cloudinaryCloudName,
-        api_key: cloudinaryApiKey,
-        api_secret: cloudinaryApiSecret,
-      });
-      console.log('☁️  Cloudinary configured successfully');
-    } else {
-      console.log('☁️  Cloudinary not configured - using local storage');
-    }
-  }
-
-  private isCloudinaryAvailable(): boolean {
-    return !!(
-      process.env.CLOUDINARY_CLOUD_NAME &&
-      process.env.CLOUDINARY_API_KEY &&
-      process.env.CLOUDINARY_API_SECRET &&
-      !process.env.CLOUDINARY_CLOUD_NAME.includes('your-')
-    );
   }
 
   private ensureUploadDir(): void {
@@ -85,19 +39,15 @@ class ImageService {
   }
 
   /**
-   * Save uploaded image files and return their URLs
+   * Save uploaded image files and return their URLs (using Supabase Storage with local fallback)
    */
   async saveImages(files: UploadedFile[]): Promise<string[]> {
-    console.log('📸 Starting image upload process...');
-    console.log('📁 Upload directory:', this.uploadDir);
-    console.log('🔗 Base URL:', this.baseUrl);
-    console.log('☁️  Cloudinary available:', this.isCloudinaryAvailable());
+    console.log('📸 Starting image upload process to Supabase Storage...');
     
     const imageUrls: string[] = [];
     
     for (const file of files) {
       try {
-        // Generate unique filename
         const ext = path.extname(file.originalname).toLowerCase();
         const allowedExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
         
@@ -106,59 +56,52 @@ class ImageService {
           continue;
         }
 
-        let imageUrl: string;
-
-        if (this.isCloudinaryAvailable()) {
-          // Use Cloudinary for persistent storage
-          try {
-            const result = await cloudinary.uploader.upload(
-              `data:${file.mimetype};base64,${file.buffer.toString('base64')}`,
-              {
-                folder: 'glan-getaway',
-                public_id: `${crypto.randomUUID()}`,
-                resource_type: 'auto',
-                format: ext.replace('.', ''),
-              }
-            );
-            
-            imageUrl = result.secure_url;
-            console.log('☁️  Image uploaded to Cloudinary:', imageUrl);
-          } catch (cloudinaryError) {
-            console.error('❌ Cloudinary upload failed, falling back to local:', cloudinaryError);
-            // Fallback to local storage
-            imageUrl = await this.saveImageLocally(file, ext);
-          }
-        } else {
-          // Use local storage
-          imageUrl = await this.saveImageLocally(file, ext);
-        }
+        const uniqueName = `${crypto.randomUUID()}${ext}`;
         
-        imageUrls.push(imageUrl);
+        // 1. Attempt to upload to Supabase Storage bucket 'resort-images'
+        console.log(`📤 Uploading ${uniqueName} to Supabase bucket 'resort-images'...`);
+        const { data, error } = await supabaseAdmin.storage
+          .from('resort-images')
+          .upload(uniqueName, file.buffer, {
+            contentType: file.mimetype,
+            upsert: true
+          });
+
+        if (error) {
+          console.warn('⚠️ Supabase upload failed, falling back to local file system:', error.message);
+          throw error; // Trigger fallback block
+        }
+
+        // 2. Retrieve public URL from Supabase
+        const { data: { publicUrl } } = supabaseAdmin.storage
+          .from('resort-images')
+          .getPublicUrl(uniqueName);
+
+        imageUrls.push(publicUrl);
+        console.log('✅ Image uploaded successfully to Supabase Storage:', publicUrl);
         
       } catch (error) {
-        console.error('❌ Error saving image:', error);
-        continue;
+        // Fallback: Write file to local uploads folder
+        try {
+          const ext = path.extname(file.originalname).toLowerCase();
+          const uniqueName = `${crypto.randomUUID()}${ext}`;
+          const filePath = path.join(this.uploadDir, uniqueName);
+          
+          fs.writeFileSync(filePath, file.buffer);
+          
+          const imageUrl = `${this.baseUrl}/uploads/${uniqueName}`;
+          imageUrls.push(imageUrl);
+          
+          console.log('⚠️ Saved locally as fallback:', uniqueName);
+          console.log('🔗 Generated Fallback URL:', imageUrl);
+        } catch (localError) {
+          console.error('❌ Failed to save image locally too:', localError);
+        }
       }
     }
     
-    console.log('📊 Total images processed:', imageUrls.length);
+    console.log('📊 Total images processed successfully:', imageUrls.length);
     return imageUrls;
-  }
-
-  private async saveImageLocally(file: UploadedFile, ext: string): Promise<string> {
-    const uniqueName = `${crypto.randomUUID()}${ext}`;
-    const filePath = path.join(this.uploadDir, uniqueName);
-    
-    // Write file to disk
-    fs.writeFileSync(filePath, new Uint8Array(file.buffer));
-    
-    // Generate URL
-    const imageUrl = `${this.baseUrl}/uploads/${uniqueName}`;
-    
-    console.log('✅ Image saved locally:', uniqueName);
-    console.log('🔗 Generated URL:', imageUrl);
-    
-    return imageUrl;
   }
 
   /**
@@ -168,27 +111,21 @@ class ImageService {
     const filename = req.params.filename;
     const filePath = path.join(this.uploadDir, filename);
 
-
-    
-    // Security check - prevent directory traversal
     if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
       console.log('🚫 Security violation - invalid filename:', filename);
       res.status(400).json({ error: 'Invalid filename' });
       return;
     }
     
-    // Check if file exists
     if (!fs.existsSync(filePath)) {
       console.log('❌ File not found:', filePath);
       res.status(404).json({ error: 'Image not found' });
       return;
     }
     
-    // Get file stats
     const stats = fs.statSync(filePath);
     console.log('📊 File size:', stats.size, 'bytes');
     
-    // Set proper content type
     const ext = path.extname(filename).toLowerCase();
     const contentTypes: Record<string, string> = {
       '.jpg': 'image/jpeg',
@@ -201,16 +138,13 @@ class ImageService {
     
     const contentType = contentTypes[ext] || 'application/octet-stream';
     
-    // Set enhanced headers for optimal caching and performance
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Length', stats.size.toString());
     
-    // Enhanced caching strategy
     const oneYear = 365 * 24 * 60 * 60;
     res.setHeader('Cache-Control', `public, max-age=${oneYear}, immutable`);
     res.setHeader('ETag', `"${stats.size}-${stats.mtime.getTime()}"`);
     
-    // Accept-Ranges for partial content support
     res.setHeader('Accept-Ranges', 'bytes');
     
     console.log('✅ Serving image:', {
@@ -221,7 +155,6 @@ class ImageService {
       cacheControl: `public, max-age=${oneYear}, immutable`
     });
     
-    // Send file
     res.sendFile(filePath, (err) => {
       if (err) {
         console.error('❌ Error sending file:', err);

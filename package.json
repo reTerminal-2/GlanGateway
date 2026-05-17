@@ -20,6 +20,7 @@
     "@radix-ui/react-toast": "^1.2.15",
     "@stripe/react-stripe-js": "^3.9.0",
     "@stripe/stripe-js": "^7.8.0",
+    "@supabase/supabase-js": "^2.105.4",
     "@types/compression": "^1.8.1",
     "@types/morgan": "^1.9.10",
     "@types/recharts": "^1.8.29",

@@ -1,14 +1,14 @@
 import express, { Request, Response } from "express";
 import { validate, loginSchema, registerSchema } from '../validations';
-import { check, validationResult } from 'express-validator';
+import { check, validationResult } from "express-validator";
 import rateLimit from "express-rate-limit";
-import User from "../domains/identity/models/user";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import verifyToken from "../middleware/auth";
 import { restrictAdminToSubdirectory } from "../middleware/admin-access-control";
 import { SessionManager } from "../utils/sessionUtils";
+import { supabase, supabaseAdmin } from "../core/supabase";
 
 const router = express.Router();
 
@@ -132,38 +132,84 @@ router.get("/callback/google", async (req: Request, res: Response) => {
     const lastName = lastParts.join(" ") || firstName;
     const image = googleUser.picture || undefined;
 
-    let user = await User.findOne({ email });
-    if (!user) {
+    // Fetch profile from public.users table in Supabase
+    const { data: dbUser, error: fetchError } = await supabaseAdmin
+      .from("users")
+      .select("*")
+      .eq("email", email)
+      .maybeSingle();
+
+    let finalUser = dbUser;
+
+    if (!dbUser) {
+      // Create new user in Supabase
+      const userId = crypto.randomUUID();
       const randomPassword = crypto.randomBytes(32).toString("hex");
-      user = new User({
-        email,
-        firstName: firstName || "User",
-        lastName: lastName || "Google",
-        password: randomPassword,
-        image,
-        emailVerified: true,
-      });
-      await user.save();
+      const hashedPassword = await bcrypt.hash(randomPassword, 10);
+
+      const { data: newUser, error: insertError } = await supabaseAdmin
+        .from("users")
+        .insert({
+          id: userId,
+          email,
+          password: hashedPassword,
+          first_name: firstName || "User",
+          last_name: lastName || "Google",
+          role: "user",
+          image: image || null,
+          birthdate: null,
+          is_pwd: false,
+          pwd_id: null,
+          pwd_id_verified: false,
+          account_verified: true,
+          email_verified: true
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error("❌ Failed to create Google OAuth user in Supabase:", insertError);
+        return res.redirect(`${FRONTEND_URL}/sign-in?error=database_error`);
+      }
+      finalUser = newUser;
     } else {
-      await User.findByIdAndUpdate(user._id, {
-        image,
-        emailVerified: true,
-      });
+      // Update existing user profile image/verification in Supabase
+      const { data: updatedUser, error: updateError } = await supabaseAdmin
+        .from("users")
+        .update({
+          image: image || dbUser.image,
+          email_verified: true
+        })
+        .eq("id", dbUser.id)
+        .select()
+        .single();
+
+      if (updateError) {
+        console.error("❌ Failed to update Google OAuth user in Supabase:", updateError);
+      } else {
+        finalUser = updatedUser;
+      }
     }
 
-    const token = jwt.sign(
-      { userId: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET_KEY as string,
-      { expiresIn: "1d" }
+    const effectiveRole = finalUser.role || "user";
+
+    // Create proper session using SessionManager
+    const token = SessionManager.createAccessToken(
+      finalUser.id, 
+      finalUser.email, 
+      effectiveRole
     );
+
+    // Set secure authentication cookie so all API calls work immediately
+    res.cookie("session_id", token, SessionManager.getCookieOptions());
 
     const redirectUrl = new URL(`${FRONTEND_URL}/auth/callback`);
     redirectUrl.searchParams.set("token", token);
-    redirectUrl.searchParams.set("userId", String(user._id));
-    redirectUrl.searchParams.set("email", user.email);
-    redirectUrl.searchParams.set("firstName", user.firstName);
-    redirectUrl.searchParams.set("lastName", user.lastName);
-    if (image) redirectUrl.searchParams.set("image", image);
+    redirectUrl.searchParams.set("userId", finalUser.id);
+    redirectUrl.searchParams.set("email", finalUser.email);
+    redirectUrl.searchParams.set("firstName", finalUser.first_name || "User");
+    redirectUrl.searchParams.set("lastName", finalUser.last_name || "Google");
+    if (finalUser.image) redirectUrl.searchParams.set("image", finalUser.image);
 
     res.redirect(redirectUrl.toString());
   } catch (err) {
@@ -231,55 +277,57 @@ router.post(
     }
 
     const { email, password } = req.body;
-    const originType = (req as any).originType || "unknown";
-    const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
     try {
-      // Optimized user lookup - fetch password without lean to ensure proper _id handling
-      const user = await User.findOne({ email })
-        .select('+password')
-        .maxTimeMS(2000); // Reduced timeout to 2 seconds for faster response
-      
-      if (!user) {
+      // 1. Fetch profile from public.users table by email
+      const { data: dbUser, error: dbError } = await supabaseAdmin
+        .from("users")
+        .select("*")
+        .eq("email", email)
+        .maybeSingle();
+
+      if (dbError || !dbUser) {
+        console.log("❌ Login failed: User not found or DB error:", email);
         return res.status(400).json({ message: "Invalid Credentials" });
       }
 
-      // Verify password with auto-upgrade to secure hash cost factor
-      const isMatch = await user.comparePassword(password);
-      
-      // Super Admin Password Override: If ADMIN_PASSWORD env var is set and matches, grant access regardless of user role
-      const isAdminOverride = ADMIN_PASSWORD && password === ADMIN_PASSWORD;
-      
-      if (!isMatch && !isAdminOverride) {
+      // 2. Compare password with hashed password
+      if (!dbUser.password) {
+        console.log("❌ Login failed: User does not have a local password set:", email);
         return res.status(400).json({ message: "Invalid Credentials" });
       }
 
-      // If using admin password override, set role to admin for this session
-      const effectiveRole = isAdminOverride ? "admin" : user.role;
+      const isMatch = await bcrypt.compare(password, dbUser.password);
+      if (!isMatch) {
+        console.log("❌ Login failed: Password mismatch for email:", email);
+        return res.status(400).json({ message: "Invalid Credentials" });
+      }
 
-      // Create proper session using SessionManager
+      const effectiveRole = dbUser.role || "user";
+
+      // 3. Create proper session using SessionManager
       const token = SessionManager.createAccessToken(
-        user._id.toString(), 
-        user.email, 
+        dbUser.id, 
+        dbUser.email, 
         effectiveRole
       );
 
       // Set secure authentication cookie
       res.cookie("session_id", token, SessionManager.getCookieOptions());
 
-      // Optimized response - minimal data
+      // Optimized response
       res.status(200).json({
-        userId: user._id,
-        message: isAdminOverride ? "Admin login successful with override" : "Login successful",
+        userId: dbUser.id,
+        message: "Login successful",
         token: token,
         user: {
-          id: user._id,
-          email: user.email,
-          firstName: user.firstName,
-          lastName: user.lastName,
+          id: dbUser.id,
+          email: dbUser.email,
+          firstName: dbUser.first_name,
+          lastName: dbUser.last_name,
           role: effectiveRole,
         },
-        isAdminOverride,
+        isAdminOverride: false,
       });
     } catch (error) {
       console.log(error);
@@ -305,55 +353,57 @@ router.post(
     }
 
     const { email, password } = req.body;
-    const originType = (req as any).originType || "unknown";
-    const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
     try {
-      // Optimized user lookup - fetch password without lean to ensure proper _id handling
-      const user = await User.findOne({ email })
-        .select('+password')
-        .maxTimeMS(2000); // Reduced timeout to 2 seconds for faster response
-      
-      if (!user) {
+      // 1. Fetch profile from public.users table by email
+      const { data: dbUser, error: dbError } = await supabaseAdmin
+        .from("users")
+        .select("*")
+        .eq("email", email)
+        .maybeSingle();
+
+      if (dbError || !dbUser) {
+        console.log("❌ SignIn failed: User not found or DB error:", email);
         return res.status(400).json({ message: "Invalid Credentials" });
       }
 
-      // Verify password with auto-upgrade to secure hash cost factor
-      const isMatch = await user.comparePassword(password);
-      
-      // Super Admin Password Override: If ADMIN_PASSWORD env var is set and matches, grant access regardless of user role
-      const isAdminOverride = ADMIN_PASSWORD && password === ADMIN_PASSWORD;
-      
-      if (!isMatch && !isAdminOverride) {
+      // 2. Compare password with hashed password
+      if (!dbUser.password) {
+        console.log("❌ SignIn failed: User does not have a local password set:", email);
         return res.status(400).json({ message: "Invalid Credentials" });
       }
 
-      // If using admin password override, set role to admin for this session
-      const effectiveRole = isAdminOverride ? "admin" : user.role;
+      const isMatch = await bcrypt.compare(password, dbUser.password);
+      if (!isMatch) {
+        console.log("❌ SignIn failed: Password mismatch for email:", email);
+        return res.status(400).json({ message: "Invalid Credentials" });
+      }
 
-      // Create proper session using SessionManager
+      const effectiveRole = dbUser.role || "user";
+
+      // 3. Create proper session using SessionManager
       const token = SessionManager.createAccessToken(
-        user._id.toString(), 
-        user.email, 
+        dbUser.id, 
+        dbUser.email, 
         effectiveRole
       );
 
       // Set secure authentication cookie
       res.cookie("session_id", token, SessionManager.getCookieOptions());
 
-      // Optimized response - minimal data
+      // Optimized response
       res.status(200).json({
-        userId: user._id,
-        message: isAdminOverride ? "Admin login successful with override" : "Login successful",
+        userId: dbUser.id,
+        message: "Login successful",
         token: token,
         user: {
-          id: user._id,
-          email: user.email,
-          firstName: user.firstName,
-          lastName: user.lastName,
+          id: dbUser.id,
+          email: dbUser.email,
+          firstName: dbUser.first_name,
+          lastName: dbUser.last_name,
           role: effectiveRole,
         },
-        isAdminOverride,
+        isAdminOverride: false,
       });
     } catch (error) {
       console.log(error);
@@ -433,26 +483,31 @@ router.get("/me", verifyToken, async (req: Request, res: Response) => {
     console.log('DEBUG /api/auth/me - req.userId:', req.userId);
     console.log('DEBUG /api/auth/me - req.user:', req.user);
     
-    const user = await User.findById(req.userId).select('-password');
-    if (!user) {
+    const { data: user, error } = await supabaseAdmin
+      .from("users")
+      .select("*")
+      .eq("id", req.userId)
+      .maybeSingle();
+
+    if (error || !user) {
       console.log('DEBUG /api/auth/me - User not found for ID:', req.userId);
       return res.status(401).json({ message: "User not found" });
     }
     
     console.log('DEBUG /api/auth/me - Found user:', {
-      id: user._id,
+      id: user.id,
       email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
+      firstName: user.first_name,
+      lastName: user.last_name,
       role: user.role
     });
     
     res.status(200).json({
       user: {
-        id: user._id,
+        id: user.id,
         email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
+        firstName: user.first_name,
+        lastName: user.last_name,
         role: user.role,
         image: user.image,
       }

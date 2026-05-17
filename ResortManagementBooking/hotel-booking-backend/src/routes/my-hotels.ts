@@ -1,7 +1,6 @@
 import express, { Request, Response } from "express";
 import multer from "multer";
 import imageService from "../services/imageService";
-import { v2 as cloudinary } from "cloudinary";
 import Hotel from "../models/hotel";
 import Booking from "../models/booking";
 import verifyToken from "../middleware/auth";
@@ -10,18 +9,7 @@ import { HotelType } from "../types";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
-
-// Check if Cloudinary is properly configured
-const isCloudinaryConfigured = () => {
-  return !!(
-    process.env.CLOUDINARY_CLOUD_NAME &&
-    process.env.CLOUDINARY_CLOUD_NAME !== "your-cloudinary-cloud-name" &&
-    process.env.CLOUDINARY_API_KEY &&
-    process.env.CLOUDINARY_API_KEY !== "your-cloudinary-api-key" &&
-    process.env.CLOUDINARY_API_SECRET &&
-    process.env.CLOUDINARY_API_SECRET !== "your-cloudinary-api-secret"
-  );
-};
+import { supabaseAdmin } from "../core/supabase";
 
 // Local storage configuration for fallback
 const localUploadDir = path.join(__dirname, "..", "..", "uploads");
@@ -496,14 +484,129 @@ router.post(
       console.log("gcashNumber set to:", newHotel.gcashNumber);
       console.log("downPaymentPercentage set to:", newHotel.downPaymentPercentage);
 
-      const hotel = new Hotel(newHotel as HotelType);
-      await hotel.save();
+      // -------------------------------------------------------------
+      // SUPABASE INSERTION BLOCK
+      // -------------------------------------------------------------
+      const resortId = crypto.randomUUID();
       
-      console.log("Saved hotel gcashNumber:", hotel.gcashNumber);
-      console.log("Saved hotel downPaymentPercentage:", hotel.downPaymentPercentage);
+      const hotelData = {
+        id: resortId,
+        user_id: req.userId,
+        name: newHotel.name,
+        city: newHotel.city,
+        country: newHotel.country,
+        description: newHotel.description,
+        types: newHotel.type,
+        facilities: newHotel.facilities,
+        day_rate: newHotel.dayRate,
+        night_rate: newHotel.nightRate,
+        has_day_rate: newHotel.hasDayRate,
+        has_night_rate: newHotel.hasNightRate,
+        star_rating: newHotel.starRating,
+        image_urls: newHotel.imageUrls,
+        location: newHotel.location || {},
+        contact: newHotel.contact || {},
+        policies: newHotel.policies || {},
+        discounts: newHotel.discounts || {},
+        child_entrance_fee: newHotel.childEntranceFee || [],
+        adult_entrance_fee: newHotel.adultEntranceFee || {},
+        down_payment_percentage: newHotel.downPaymentPercentage,
+        gcash_number: newHotel.gcashNumber,
+        is_approved: false,
+        status: 'pending'
+      };
+
+      console.log("📡 Inserting hotel into Supabase public.hotels...");
+      const { error: hotelInsertError } = await supabaseAdmin
+        .from('hotels')
+        .insert(hotelData);
+        
+      if (hotelInsertError) {
+        console.error("❌ Supabase hotel insert error:", hotelInsertError);
+        throw new Error(`Failed to insert hotel: ${hotelInsertError.message}`);
+      }
+
+      // Insert related rooms
+      if (newHotel.rooms && newHotel.rooms.length > 0) {
+        const roomsToInsert = newHotel.rooms.map((room: any) => ({
+          hotel_id: resortId,
+          name: room.name,
+          type: room.type,
+          price_per_night: room.pricePerNight,
+          min_occupancy: room.minOccupancy,
+          max_occupancy: room.maxOccupancy,
+          description: room.description || "",
+          amenities: room.amenities || [],
+          image_url: room.imageUrl || "",
+          included_entrance_fee: room.includedEntranceFee || { enabled: false, adultCount: 0, childCount: 0 }
+        }));
+        await supabaseAdmin.from('rooms').insert(roomsToInsert);
+      }
+
+      // Insert related cottages
+      if (newHotel.cottages && newHotel.cottages.length > 0) {
+        const cottagesToInsert = newHotel.cottages.map((cottage: any) => ({
+          hotel_id: resortId,
+          name: cottage.name,
+          type: cottage.type,
+          price_per_night: cottage.pricePerNight || 0,
+          day_rate: cottage.dayRate || 0,
+          night_rate: cottage.nightRate || 0,
+          has_day_rate: cottage.hasDayRate || false,
+          has_night_rate: cottage.hasNightRate || false,
+          min_occupancy: cottage.minOccupancy,
+          max_occupancy: cottage.maxOccupancy,
+          description: cottage.description || "",
+          amenities: cottage.amenities || [],
+          image_url: cottage.imageUrl || "",
+          included_entrance_fee: cottage.includedEntranceFee || { enabled: false, adultCount: 0, childCount: 0 }
+        }));
+        await supabaseAdmin.from('cottages').insert(cottagesToInsert);
+      }
+
+      // Insert amenities
+      if (newHotel.amenities && newHotel.amenities.length > 0) {
+        const amenitiesToInsert = newHotel.amenities.map((amenity: any) => ({
+          hotel_id: resortId,
+          name: amenity.name,
+          price: amenity.price || 0,
+          description: amenity.description || "",
+          image_url: amenity.imageUrl || ""
+        }));
+        await supabaseAdmin.from('amenities').insert(amenitiesToInsert);
+      }
+      
+      // Insert packages
+      if (newHotel.packages && newHotel.packages.length > 0) {
+         const packagesToInsert = newHotel.packages.map((pkg: any) => ({
+           hotel_id: resortId,
+           name: pkg.name,
+           description: pkg.description || "",
+           price: pkg.price || 0,
+           image_url: pkg.imageUrl || "",
+           included_cottages: pkg.includedCottages || [],
+           included_rooms: pkg.includedRooms || [],
+           included_amenities: pkg.includedAmenities || [],
+           included_child_entrance_fee: pkg.includedChildEntranceFee || false
+         }));
+         await supabaseAdmin.from('packages').insert(packagesToInsert);
+      }
+
+      // Return the new hotel formatted properly for the frontend
+      const returnedHotel = {
+        ...newHotel,
+        _id: resortId,
+        id: resortId,
+        userId: req.userId,
+        isApproved: false,
+        status: 'pending',
+        lastUpdated: new Date()
+      };
+
+      console.log("✅ Successfully saved hotel to Supabase:", resortId);
 
       res.status(201).json({
-        ...hotel.toObject(),
+        ...returnedHotel,
         message: "Resort submitted for approval. It will be visible to users once approved by an administrator."
       });
     } catch (error: any) {
@@ -532,9 +635,28 @@ router.post(
 
 router.get("/", verifyToken, async (req: Request, res: Response) => {
   try {
-    const hotels = await Hotel.find({ userId: req.userId });
-    res.json(hotels);
+    console.log("📡 Fetching my hotels from Supabase...");
+    const { data: hotels, error } = await supabaseAdmin
+      .from("hotels")
+      .select("*")
+      .eq("user_id", req.userId);
+
+    if (error) {
+      console.error("❌ Failed to fetch hotels from Supabase:", error);
+      return res.status(500).json({ message: "Error fetching hotels" });
+    }
+
+    // Map fields so the frontend gets what it expects (_id, etc.)
+    const formattedHotels = (hotels || []).map((h: any) => ({
+      ...h,
+      _id: h.id,
+      userId: h.user_id,
+      type: h.types
+    }));
+
+    res.json(formattedHotels);
   } catch (error) {
+    console.error("❌ Error fetching hotels:", error);
     res.status(500).json({ message: "Error fetching hotels" });
   }
 });
@@ -542,13 +664,68 @@ router.get("/", verifyToken, async (req: Request, res: Response) => {
 router.get("/:id", verifyToken, async (req: Request, res: Response) => {
   const id = req.params.id.toString();
   try {
-    const hotel = await Hotel.findOne({
-      _id: id,
-      userId: req.userId,
-    });
-    res.json(hotel);
+    console.log(`📡 Fetching hotel ${id} from Supabase...`);
+    const { data: hotel, error } = await supabaseAdmin
+      .from("hotels")
+      .select("*")
+      .eq("id", id)
+      .eq("user_id", req.userId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("❌ Failed to fetch hotel from Supabase:", error);
+      return res.status(500).json({ message: "Error fetching hotel" });
+    }
+
+    if (!hotel) {
+      return res.status(404).json({ message: "Hotel not found" });
+    }
+
+    // Fetch related rooms, cottages, amenities, and packages for this hotel
+    const { data: rooms } = await supabaseAdmin.from("rooms").select("*").eq("hotel_id", id);
+    const { data: cottages } = await supabaseAdmin.from("cottages").select("*").eq("hotel_id", id);
+    const { data: amenities } = await supabaseAdmin.from("amenities").select("*").eq("hotel_id", id);
+    const { data: packages } = await supabaseAdmin.from("packages").select("*").eq("hotel_id", id);
+
+    const formattedHotel = {
+      ...hotel,
+      _id: hotel.id,
+      userId: hotel.user_id,
+      type: hotel.types,
+      rooms: (rooms || []).map((r: any) => ({
+        ...r,
+        pricePerNight: r.price_per_night,
+        minOccupancy: r.min_occupancy,
+        maxOccupancy: r.max_occupancy,
+        imageUrl: r.image_url,
+        includedEntranceFee: r.included_entrance_fee
+      })),
+      cottages: (cottages || []).map((c: any) => ({
+        ...c,
+        pricePerNight: c.price_per_night,
+        minOccupancy: c.min_occupancy,
+        maxOccupancy: c.max_occupancy,
+        imageUrl: c.image_url,
+        includedEntranceFee: c.included_entrance_fee
+      })),
+      amenities: (amenities || []).map((a: any) => ({
+        ...a,
+        imageUrl: a.image_url
+      })),
+      packages: (packages || []).map((p: any) => ({
+        ...p,
+        imageUrl: p.image_url,
+        includedCottages: p.included_cottages,
+        includedRooms: p.included_rooms,
+        includedAmenities: p.included_amenities,
+        includedChildEntranceFee: p.included_child_entrance_fee
+      }))
+    };
+
+    res.json(formattedHotel);
   } catch (error) {
-    res.status(500).json({ message: "Error fetching hotels" });
+    console.error("❌ Error fetching hotel detail:", error);
+    res.status(500).json({ message: "Error fetching hotel details" });
   }
 });
 

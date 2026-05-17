@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { supabaseAdmin } from '../core/supabase';
 
 interface UploadedFile {
   originalname: string;
@@ -49,18 +50,15 @@ class ImageService {
   }
 
   /**
-   * Save uploaded image files and return their URLs
+   * Save uploaded image files and return their URLs (using Supabase Storage with local fallback)
    */
   async saveImages(files: UploadedFile[]): Promise<string[]> {
-    console.log('📸 Starting image upload process...');
-    console.log('📁 Upload directory:', this.uploadDir);
-    console.log('🔗 Base URL:', this.baseUrl);
+    console.log('📸 Starting image upload process to Supabase Storage...');
     
     const imageUrls: string[] = [];
     
     for (const file of files) {
       try {
-        // Generate unique filename
         const ext = path.extname(file.originalname).toLowerCase();
         const allowedExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
         
@@ -70,25 +68,50 @@ class ImageService {
         }
 
         const uniqueName = `${crypto.randomUUID()}${ext}`;
-        const filePath = path.join(this.uploadDir, uniqueName);
         
-        // Write file to disk
-        fs.writeFileSync(filePath, file.buffer);
-        
-        // Generate URL
-        const imageUrl = `${this.baseUrl}/uploads/${uniqueName}`;
-        imageUrls.push(imageUrl);
-        
-        console.log('✅ Image saved:', uniqueName);
-        console.log('🔗 Generated URL:', imageUrl);
+        // 1. Attempt to upload to Supabase Storage bucket 'resort-images'
+        console.log(`📤 Uploading ${uniqueName} to Supabase bucket 'resort-images'...`);
+        const { data, error } = await supabaseAdmin.storage
+          .from('resort-images')
+          .upload(uniqueName, file.buffer, {
+            contentType: file.mimetype,
+            upsert: true
+          });
+
+        if (error) {
+          console.warn('⚠️ Supabase upload failed, falling back to local file system:', error.message);
+          throw error; // Trigger fallback block
+        }
+
+        // 2. Retrieve public URL from Supabase
+        const { data: { publicUrl } } = supabaseAdmin.storage
+          .from('resort-images')
+          .getPublicUrl(uniqueName);
+
+        imageUrls.push(publicUrl);
+        console.log('✅ Image uploaded successfully to Supabase Storage:', publicUrl);
         
       } catch (error) {
-        console.error('❌ Error saving image:', error);
-        continue;
+        // Fallback: Write file to local uploads folder
+        try {
+          const ext = path.extname(file.originalname).toLowerCase();
+          const uniqueName = `${crypto.randomUUID()}${ext}`;
+          const filePath = path.join(this.uploadDir, uniqueName);
+          
+          fs.writeFileSync(filePath, file.buffer);
+          
+          const imageUrl = `${this.baseUrl}/uploads/${uniqueName}`;
+          imageUrls.push(imageUrl);
+          
+          console.log('⚠️ Saved locally as fallback:', uniqueName);
+          console.log('🔗 Generated Fallback URL:', imageUrl);
+        } catch (localError) {
+          console.error('❌ Failed to save image locally too:', localError);
+        }
       }
     }
     
-    console.log('📊 Total images processed:', imageUrls.length);
+    console.log('📊 Total images processed successfully:', imageUrls.length);
     return imageUrls;
   }
 

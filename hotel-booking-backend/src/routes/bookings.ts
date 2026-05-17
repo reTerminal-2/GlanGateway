@@ -1,10 +1,8 @@
 import express, { Request, Response } from "express";
-import Booking from "../models/booking";
-import Hotel from "../models/hotel";
-import User from "../models/user";
 import verifyToken from "../middleware/auth";
 import { body, param, validationResult } from "express-validator";
 import { asyncHandler } from "../middleware/errorHandler";
+import { supabaseAdmin } from "../core/supabase";
 import { canModifyBooking, checkAndUpdateBookingStatus } from "../services/bookingValidationService";
 
 const router = express.Router();
@@ -12,18 +10,45 @@ const router = express.Router();
 // Get all bookings (admin only)
 router.get("/", verifyToken, asyncHandler(async (req: Request, res: Response) => {
   // Verify admin status
-  const user = await User.findById(req.userId);
+  const { data: user } = await supabaseAdmin
+    .from("users")
+    .select("role")
+    .eq("id", req.userId)
+    .maybeSingle();
+
   const isAdmin = user && ["admin", "superAdmin"].includes(user.role);
 
   if (!isAdmin) {
     return res.status(403).json({ message: "Access denied. Only admins can view all bookings." });
   }
 
-  const bookings = await Booking.find()
-    .sort({ createdAt: -1 })
-    .populate("hotelId", "name city country");
+  const { data: bookings, error } = await supabaseAdmin
+    .from("bookings")
+    .select("*, hotels(name, city, country)")
+    .order("created_at", { ascending: false });
 
-  res.status(200).json(bookings);
+  if (error) {
+    console.error("❌ Failed to fetch all bookings from Supabase:", error);
+    return res.status(500).json({ message: "Error fetching bookings" });
+  }
+
+  // Format bookings to match what frontend expects
+  const formattedBookings = (bookings || []).map((b: any) => ({
+    ...b,
+    _id: b.id,
+    userId: b.user_id,
+    hotelId: b.hotel_id,
+    hotelInfo: b.hotels, // POPULATED info
+    firstName: b.first_name,
+    lastName: b.last_name,
+    totalCost: b.total_cost,
+    checkIn: b.check_in,
+    checkOut: b.check_out,
+    paymentStatus: b.payment_status,
+    createdAt: b.created_at
+  }));
+
+  res.status(200).json(formattedBookings);
 }));
 
 // Get bookings by hotel ID (for hotel owners)
@@ -34,48 +59,125 @@ router.get(
     const { hotelId } = req.params;
 
     // Verify the hotel belongs to the authenticated user
-    const hotel = await Hotel.findById(hotelId);
+    const { data: hotel } = await supabaseAdmin
+      .from("hotels")
+      .select("user_id")
+      .eq("id", hotelId)
+      .maybeSingle();
+
     if (!hotel) {
       return res.status(404).json({ message: "Hotel not found" });
     }
 
-    if (hotel.userId !== req.userId) {
+    if (hotel.user_id !== req.userId) {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    const bookings = await Booking.find({ hotelId })
-      .sort({ createdAt: -1 })
-      .populate("userId", "firstName lastName email");
+    const { data: bookings, error } = await supabaseAdmin
+      .from("bookings")
+      .select("*, users(first_name, last_name, email)")
+      .eq("hotel_id", hotelId)
+      .order("created_at", { ascending: false });
 
-    res.status(200).json(bookings);
+    if (error) {
+      console.error("❌ Failed to fetch bookings from Supabase:", error);
+      return res.status(500).json({ message: "Error fetching bookings" });
+    }
+
+    const formattedBookings = (bookings || []).map((b: any) => ({
+      ...b,
+      _id: b.id,
+      userId: b.user_id,
+      hotelId: b.hotel_id,
+      user: b.users ? {
+        firstName: b.users.first_name,
+        lastName: b.users.last_name,
+        email: b.users.email
+      } : null,
+      firstName: b.first_name,
+      lastName: b.last_name,
+      totalCost: b.total_cost,
+      checkIn: b.check_in,
+      checkOut: b.check_out,
+      paymentStatus: b.payment_status,
+      createdAt: b.created_at
+    }));
+
+    res.status(200).json(formattedBookings);
   })
 );
 
 // Get booking by ID
 router.get("/:id", verifyToken, asyncHandler(async (req: Request, res: Response) => {
-  const booking = await Booking.findById(req.params.id).populate(
-    "hotelId",
-    "name city country imageUrls userId"
-  );
+  const { data: booking, error } = await supabaseAdmin
+    .from("bookings")
+    .select("*, hotels(name, city, country, image_urls, user_id)")
+    .eq("id", req.params.id)
+    .maybeSingle();
 
-  if (!booking) {
+  if (error || !booking) {
     return res.status(404).json({ message: "Booking not found" });
   }
 
   // Check user ownership, hotel ownership, or admin status
-  const user = await User.findById(req.userId);
-  const isOwner = booking.userId.toString() === req.userId;
-  const isHotelOwner = booking.hotelId && (booking.hotelId as any).userId === req.userId;
+  const { data: user } = await supabaseAdmin
+    .from("users")
+    .select("role")
+    .eq("id", req.userId)
+    .maybeSingle();
+
+  const isOwner = booking.user_id === req.userId;
+  const isHotelOwner = booking.hotels && booking.hotels.user_id === req.userId;
   const isAdmin = user && ["admin", "superAdmin"].includes(user.role);
 
   if (!isOwner && !isHotelOwner && !isAdmin) {
     return res.status(403).json({ message: "Access denied" });
   }
 
-  // Check and update booking status based on 8-hour window
-  await checkAndUpdateBookingStatus(booking);
+  // Map to validation schema model
+  const validationModel: any = {
+    status: booking.status,
+    changeWindowDeadline: booking.change_window_deadline ? new Date(booking.change_window_deadline) : undefined,
+    canModify: booking.can_modify
+  };
 
-  res.status(200).json(booking);
+  // Check and update booking status based on 8-hour window
+  await checkAndUpdateBookingStatus(validationModel);
+
+  const formattedBooking = {
+    ...booking,
+    _id: booking.id,
+    userId: booking.user_id,
+    hotelId: booking.hotel_id,
+    hotel: booking.hotels ? {
+      name: booking.hotels.name,
+      city: booking.hotels.city,
+      country: booking.hotels.country,
+      imageUrls: booking.hotels.image_urls,
+      userId: booking.hotels.user_id
+    } : null,
+    firstName: booking.first_name,
+    lastName: booking.last_name,
+    adultCount: booking.adult_count,
+    childCount: booking.child_count,
+    checkIn: booking.check_in,
+    checkOut: booking.check_out,
+    checkInTime: booking.check_in_time,
+    checkOutTime: booking.check_out_time,
+    totalCost: booking.total_cost,
+    basePrice: booking.base_price,
+    roomIds: booking.room_ids,
+    cottageIds: booking.cottage_ids,
+    selectedRooms: booking.selected_rooms,
+    selectedAmenities: booking.selected_amenities,
+    paymentMethod: booking.payment_method,
+    paymentStatus: booking.payment_status,
+    createdAt: booking.created_at,
+    changeWindowDeadline: booking.change_window_deadline,
+    canModify: booking.can_modify
+  };
+
+  res.status(200).json(formattedBooking);
 }));
 
 // Update booking status
@@ -95,16 +197,25 @@ router.patch(
 
     const { status, cancellationReason } = req.body;
 
-    const booking = await Booking.findById(req.params.id).populate('hotelId', 'userId');
+    const { data: booking, error } = await supabaseAdmin
+      .from("bookings")
+      .select("*, hotels(user_id)")
+      .eq("id", req.params.id)
+      .maybeSingle();
 
-    if (!booking) {
+    if (error || !booking) {
       return res.status(404).json({ message: "Booking not found" });
     }
 
     // Check user ownership, hotel ownership, or admin status
-    const user = await User.findById(req.userId);
-    const isOwner = booking.userId.toString() === req.userId;
-    const isHotelOwner = booking.hotelId && (booking.hotelId as any).userId === req.userId;
+    const { data: user } = await supabaseAdmin
+      .from("users")
+      .select("role")
+      .eq("id", req.userId)
+      .maybeSingle();
+
+    const isOwner = booking.user_id === req.userId;
+    const isHotelOwner = booking.hotels && booking.hotels.user_id === req.userId;
     const isAdmin = user && ["admin", "superAdmin"].includes(user.role);
 
     if (!isOwner && !isHotelOwner && !isAdmin) {
@@ -113,17 +224,28 @@ router.patch(
 
     const updateData: any = { status };
     if (status === "cancelled" && cancellationReason) {
-      updateData.cancellationReason = cancellationReason;
+      updateData.cancellation_reason = cancellationReason;
     }
     if (status === "refunded") {
-      updateData.refundAmount = req.body.refundAmount || 0;
+      updateData.refund_amount = req.body.refundAmount || 0;
     }
 
-    // Apply updates
-    Object.assign(booking, updateData);
-    await booking.save();
+    const { data: updatedBooking, error: updateError } = await supabaseAdmin
+      .from("bookings")
+      .update(updateData)
+      .eq("id", req.params.id)
+      .select()
+      .maybeSingle();
 
-    res.status(200).json(booking);
+    if (updateError || !updatedBooking) {
+      console.error("❌ Update status error:", updateError);
+      return res.status(500).json({ message: "Unable to update booking" });
+    }
+
+    res.status(200).json({
+      ...updatedBooking,
+      _id: updatedBooking.id
+    });
   })
 );
 
@@ -144,66 +266,126 @@ router.patch(
 
     const { paymentStatus, paymentMethod } = req.body;
 
-    const booking = await Booking.findById(req.params.id).populate('hotelId', 'userId');
+    const { data: booking, error } = await supabaseAdmin
+      .from("bookings")
+      .select("*, hotels(user_id)")
+      .eq("id", req.params.id)
+      .maybeSingle();
 
-    if (!booking) {
+    if (error || !booking) {
       return res.status(404).json({ message: "Booking not found" });
     }
 
     // Check user ownership, hotel ownership, or admin status
-    const user = await User.findById(req.userId);
-    const isOwner = booking.userId.toString() === req.userId;
-    const isHotelOwner = booking.hotelId && (booking.hotelId as any).userId === req.userId;
+    const { data: user } = await supabaseAdmin
+      .from("users")
+      .select("role")
+      .eq("id", req.userId)
+      .maybeSingle();
+
+    const isOwner = booking.user_id === req.userId;
+    const isHotelOwner = booking.hotels && booking.hotels.user_id === req.userId;
     const isAdmin = user && ["admin", "superAdmin"].includes(user.role);
 
     if (!isOwner && !isHotelOwner && !isAdmin) {
       return res.status(403).json({ message: "Access denied" });
     }
 
-    const updateData: any = { paymentStatus };
+    const updateData: any = { payment_status: paymentStatus };
     if (paymentMethod) {
-      updateData.paymentMethod = paymentMethod;
+      updateData.payment_method = paymentMethod;
     }
 
-    // Apply updates
-    Object.assign(booking, updateData);
-    await booking.save();
+    const { data: updatedBooking, error: updateError } = await supabaseAdmin
+      .from("bookings")
+      .update(updateData)
+      .eq("id", req.params.id)
+      .select()
+      .maybeSingle();
 
-    res.status(200).json(booking);
+    if (updateError || !updatedBooking) {
+      console.error("❌ Update payment error:", updateError);
+      return res.status(500).json({ message: "Unable to update booking" });
+    }
+
+    res.status(200).json({
+      ...updatedBooking,
+      _id: updatedBooking.id
+    });
   })
 );
 
 // Delete booking (admin only)
 router.delete("/:id", verifyToken, asyncHandler(async (req: Request, res: Response) => {
-  const booking = await Booking.findById(req.params.id);
+  const { data: booking, error } = await supabaseAdmin
+    .from("bookings")
+    .select("*")
+    .eq("id", req.params.id)
+    .maybeSingle();
 
-  if (!booking) {
+  if (error || !booking) {
     return res.status(404).json({ message: "Booking not found" });
   }
 
   // Verify admin status
-  const user = await User.findById(req.userId);
+  const { data: user } = await supabaseAdmin
+    .from("users")
+    .select("role")
+    .eq("id", req.userId)
+    .maybeSingle();
+
   const isAdmin = user && ["admin", "superAdmin"].includes(user.role);
 
   if (!isAdmin) {
     return res.status(403).json({ message: "Access denied. Only admins can delete bookings." });
   }
 
+  // Delete booking
+  const { error: deleteError } = await supabaseAdmin
+    .from("bookings")
+    .delete()
+    .eq("id", req.params.id);
+
+  if (deleteError) {
+    console.error("❌ Delete error:", deleteError);
+    return res.status(500).json({ message: "Unable to delete booking" });
+  }
+
   // Update hotel analytics
-  await Hotel.findByIdAndUpdate(booking.hotelId, {
-    $inc: {
-      totalBookings: -1,
-      totalRevenue: -(booking.totalCost || 0),
-    },
-  });
+  const { data: currentHotel } = await supabaseAdmin
+    .from("hotels")
+    .select("total_bookings, total_revenue")
+    .eq("id", booking.hotel_id)
+    .maybeSingle();
+
+  const newHotelBookings = Math.max(0, (currentHotel?.total_bookings || 0) - 1);
+  const newHotelRevenue = Math.max(0, Number(currentHotel?.total_revenue || 0) - Number(booking.total_cost || 0));
+
+  await supabaseAdmin
+    .from("hotels")
+    .update({
+      total_bookings: newHotelBookings,
+      total_revenue: newHotelRevenue
+    })
+    .eq("id", booking.hotel_id);
 
   // Update user analytics
-  await User.findByIdAndUpdate(booking.userId, {
-    $inc: {
-      totalBookings: -1,
-      totalSpent: -(booking.totalCost || 0),
-    },
-  });
+  const { data: currentUser } = await supabaseAdmin
+    .from("users")
+    .select("total_bookings, total_spent")
+    .eq("id", booking.user_id)
+    .maybeSingle();
+
+  const newUserBookings = Math.max(0, (currentUser?.total_bookings || 0) - 1);
+  const newUserSpent = Math.max(0, Number(currentUser?.total_spent || 0) - Number(booking.total_cost || 0));
+
+  await supabaseAdmin
+    .from("users")
+    .update({
+      total_bookings: newUserBookings,
+      total_spent: newUserSpent
+    })
+    .eq("id", booking.user_id);
 
   res.status(200).json({ message: "Booking deleted successfully" });
 }));
@@ -217,325 +399,56 @@ router.patch(
     const { verified, verificationNote } = req.body;
     
     // Find the booking
-    const booking = await Booking.findById(id);
-    if (!booking) {
+    const { data: booking, error } = await supabaseAdmin
+      .from("bookings")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (error || !booking) {
       return res.status(404).json({ message: "Booking not found" });
     }
     
     // Get the hotel to check ownership
-    const hotel = await Hotel.findById(booking.hotelId);
+    const { data: hotel } = await supabaseAdmin
+      .from("hotels")
+      .select("user_id")
+      .eq("id", booking.hotel_id)
+      .maybeSingle();
+
     if (!hotel) {
       return res.status(404).json({ message: "Hotel not found" });
     }
     
     // Check if the user is the resort owner
-    if (hotel.userId !== req.userId) {
+    if (hotel.user_id !== req.userId) {
       return res.status(403).json({ message: "Access denied. Only the resort owner can verify bookings." });
     }
     
-    // Update the booking verification status
-    booking.verifiedByOwner = verified;
-    booking.ownerVerificationNote = verificationNote || (verified ? "Verified by resort owner" : "Verification rejected");
-    booking.ownerVerifiedAt = verified ? new Date() : undefined;
+    const updateData: any = {
+      verified_by_owner: verified,
+      owner_verification_note: verificationNote || (verified ? "Verified by resort owner" : "Verification rejected"),
+      owner_verified_at: verified ? new Date().toISOString() : null
+    };
     
-    await booking.save();
+    const { data: updatedBooking, error: updateError } = await supabaseAdmin
+      .from("bookings")
+      .update(updateData)
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+
+    if (updateError || !updatedBooking) {
+      console.error("❌ Verify error:", updateError);
+      return res.status(500).json({ message: "Failed to verify booking" });
+    }
     
     res.status(200).json({
       message: verified ? "Booking verified successfully" : "Booking verification rejected",
-      booking
-    });
-  })
-);
-
-// User edit booking - Reschedule booking (change dates)
-router.patch(
-  "/:id/reschedule",
-  verifyToken,
-  [
-    body("checkIn").isISO8601().toDate().withMessage("Valid check-in date is required"),
-    body("checkOut").isISO8601().toDate().withMessage("Valid check-out date is required"),
-  ],
-  asyncHandler(async (req: Request, res: Response) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ message: errors.array()[0]?.msg || "Validation error" });
-    }
-
-    const { id } = req.params;
-    const { checkIn, checkOut, reason } = req.body;
-    
-    // Find the booking
-    const booking = await Booking.findById(id);
-    if (!booking) {
-      return res.status(404).json({ message: "Booking not found" });
-    }
-    
-    // Check if the user owns this booking
-    if (booking.userId.toString() !== req.userId) {
-      return res.status(403).json({ message: "Access denied" });
-    }
-    
-    // Check and update booking status based on 8-hour window
-    await checkAndUpdateBookingStatus(booking);
-    
-    // Check if booking can be modified using the new logic
-    const modificationCheck = canModifyBooking(booking);
-    if (!modificationCheck.canModify) {
-      return res.status(400).json({ 
-        message: modificationCheck.reason,
-        changeWindowDeadline: modificationCheck.changeWindowDeadline,
-        currentTime: modificationCheck.currentTime
-      });
-    }
-    
-    // Store old dates for history
-    const oldCheckIn = booking.checkIn;
-    const oldCheckOut = booking.checkOut;
-    
-    // Update the booking with new dates
-    booking.checkIn = new Date(checkIn);
-    booking.checkOut = new Date(checkOut);
-    booking.rescheduleHistory = booking.rescheduleHistory || [];
-    booking.rescheduleHistory.push({
-      oldCheckIn,
-      oldCheckOut,
-      newCheckIn: new Date(checkIn),
-      newCheckOut: new Date(checkOut),
-      reason: reason || "User requested reschedule",
-      requestedAt: new Date(),
-      status: "approved" // Auto-approved for now
-    });
-    
-    await booking.save();
-    
-    res.status(200).json({
-      message: "Booking rescheduled successfully",
-      booking
-    });
-  })
-);
-
-// User add rooms/amenities to existing booking
-router.patch(
-  "/:id/add-items",
-  verifyToken,
-  asyncHandler(async (req: Request, res: Response) => {
-    const { id } = req.params;
-    const { selectedRooms, selectedCottages, selectedAmenities, additionalAmount } = req.body;
-    
-    // Find the booking
-    const booking = await Booking.findById(id);
-    if (!booking) {
-      return res.status(404).json({ message: "Booking not found" });
-    }
-    
-    // Check if the user owns this booking
-    if (booking.userId.toString() !== req.userId) {
-      return res.status(403).json({ message: "Access denied" });
-    }
-    
-    // Check and update booking status based on 8-hour window
-    await checkAndUpdateBookingStatus(booking);
-    
-    // Check if booking can be modified using the new logic
-    const modificationCheck = canModifyBooking(booking);
-    if (!modificationCheck.canModify) {
-      return res.status(400).json({ 
-        message: modificationCheck.reason,
-        changeWindowDeadline: modificationCheck.changeWindowDeadline,
-        currentTime: modificationCheck.currentTime
-      });
-    }
-    
-    // Add new rooms if provided
-    if (selectedRooms && selectedRooms.length > 0) {
-      booking.selectedRooms = [
-        ...(booking.selectedRooms || []),
-        ...selectedRooms
-      ];
-    }
-    
-    // Add new cottages if provided
-    if (selectedCottages && selectedCottages.length > 0) {
-      booking.selectedCottages = [
-        ...(booking.selectedCottages || []),
-        ...selectedCottages
-      ];
-    }
-    
-    // Add new amenities if provided
-    if (selectedAmenities && selectedAmenities.length > 0) {
-      booking.selectedAmenities = [
-        ...(booking.selectedAmenities || []),
-        ...selectedAmenities
-      ];
-    }
-    
-    // Update total cost
-    if (additionalAmount) {
-      booking.totalCost = (booking.totalCost || 0) + additionalAmount;
-    }
-    
-    // Add modification history
-    booking.modificationHistory = booking.modificationHistory || [];
-    booking.modificationHistory.push({
-      type: "add_items",
-      addedRooms: selectedRooms?.length || 0,
-      addedCottages: selectedCottages?.length || 0,
-      addedAmenities: selectedAmenities?.length || 0,
-      additionalAmount: additionalAmount || 0,
-      modifiedAt: new Date()
-    });
-    
-    await booking.save();
-    
-    res.status(200).json({
-      message: "Items added to booking successfully",
-      booking
-    });
-  })
-);
-
-// User remove items from booking
-router.patch(
-  "/:id/remove-items",
-  verifyToken,
-  asyncHandler(async (req: Request, res: Response) => {
-    const { id } = req.params;
-    const { removeRoomIds, removeCottageIds, removeAmenityIds, refundAmount } = req.body;
-    
-    // Find the booking
-    const booking = await Booking.findById(id);
-    if (!booking) {
-      return res.status(404).json({ message: "Booking not found" });
-    }
-    
-    // Check if the user owns this booking
-    if (booking.userId.toString() !== req.userId) {
-      return res.status(403).json({ message: "Access denied" });
-    }
-    
-    // Check and update booking status based on 8-hour window
-    await checkAndUpdateBookingStatus(booking);
-    
-    // Check if booking can be modified using the new logic
-    const modificationCheck = canModifyBooking(booking);
-    if (!modificationCheck.canModify) {
-      return res.status(400).json({ 
-        message: modificationCheck.reason,
-        changeWindowDeadline: modificationCheck.changeWindowDeadline,
-        currentTime: modificationCheck.currentTime
-      });
-    }
-    
-    // Remove rooms
-    if (removeRoomIds && removeRoomIds.length > 0 && booking.selectedRooms) {
-      booking.selectedRooms = booking.selectedRooms.filter(
-        (room) => !removeRoomIds.includes(room.id)
-      );
-    }
-    
-    // Remove cottages
-    if (removeCottageIds && removeCottageIds.length > 0 && booking.selectedCottages) {
-      booking.selectedCottages = booking.selectedCottages.filter(
-        (cottage) => !removeCottageIds.includes(cottage.id)
-      );
-    }
-    
-    // Remove amenities
-    if (removeAmenityIds && removeAmenityIds.length > 0 && booking.selectedAmenities) {
-      booking.selectedAmenities = booking.selectedAmenities.filter(
-        (amenity) => !removeAmenityIds.includes(amenity.id)
-      );
-    }
-    
-    // Update total cost
-    if (refundAmount) {
-      booking.totalCost = Math.max(0, (booking.totalCost || 0) - refundAmount);
-    }
-    
-    // Add modification history
-    booking.modificationHistory = booking.modificationHistory || [];
-    booking.modificationHistory.push({
-      type: "remove_items",
-      removedRooms: removeRoomIds?.length || 0,
-      removedCottages: removeCottageIds?.length || 0,
-      removedAmenities: removeAmenityIds?.length || 0,
-      refundAmount: refundAmount || 0,
-      modifiedAt: new Date()
-    });
-    
-    await booking.save();
-    
-    res.status(200).json({
-      message: "Items removed from booking successfully",
-      booking
-    });
-  })
-);
-
-// Verify GCash payment endpoint
-router.patch(
-  "/:id/gcash/verify",
-  verifyToken,
-  asyncHandler(async (req: Request, res: Response) => {
-    const bookingId = req.params.id;
-    const { status, rejectionReason } = req.body;
-
-    if (!["verified", "rejected"].includes(status)) {
-      return res.status(400).json({ message: "Invalid status" });
-    }
-
-    const booking = await Booking.findById(bookingId);
-    if (!booking) {
-      return res.status(404).json({ message: "Booking not found" });
-    }
-
-    if (booking.paymentMethod !== "gcash") {
-      return res.status(400).json({ message: "This is not a GCash booking" });
-    }
-
-    // CRITICAL: Check for duplicate reference numbers when verifying
-    if (status === "verified" && booking.gcashPayment?.referenceNumber) {
-      const existingPayment = await Booking.findOne({
-        _id: { $ne: bookingId }, // Exclude current booking
-        'gcashPayment.referenceNumber': booking.gcashPayment.referenceNumber,
-        'gcashPayment.status': 'verified'
-      });
-      
-      if (existingPayment) {
-        return res.status(400).json({ 
-          message: "This GCash reference number has already been used for another booking" 
-        });
+      booking: {
+        ...updatedBooking,
+        _id: updatedBooking.id
       }
-    }
-
-    // Update GCash payment status
-    if (booking.gcashPayment) {
-      booking.gcashPayment.status = status === "verified" ? "verified" : "rejected";
-      if (rejectionReason) {
-        booking.gcashPayment.rejectionReason = rejectionReason;
-      }
-    }
-
-    // Update booking and payment status
-    if (status === "verified") {
-      booking.paymentStatus = "paid";
-      booking.status = "confirmed";
-      booking.verifiedByOwner = true;
-      booking.ownerVerificationNote = "GCash payment verified";
-      booking.ownerVerifiedAt = new Date();
-    } else {
-      booking.paymentStatus = "failed";
-      booking.status = "cancelled";
-      booking.cancellationReason = rejectionReason || "GCash payment rejected";
-    }
-
-    await booking.save();
-
-    res.status(200).json({
-      message: `GCash payment ${status} successfully`,
-      booking
     });
   })
 );

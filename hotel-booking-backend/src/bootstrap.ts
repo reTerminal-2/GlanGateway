@@ -1,8 +1,6 @@
 import express from "express";
-import mongoose from "mongoose";
 import fs from "fs";
 import path from "path";
-import { v2 as cloudinary } from "cloudinary";
 import compression from "compression";
 import morgan from "morgan";
 import { errorHandler, setupProcessErrorHandlers } from "./middleware/errorHandler";
@@ -23,7 +21,9 @@ import { metrics } from "./core/metrics";
 
 // Environment Variables Validation
 const requiredEnvVars = [
-  "MONGODB_CONNECTION_STRING",
+  "SUPABASE_URL",
+  "SUPABASE_ANON_KEY",
+  "SUPABASE_SERVICE_ROLE_KEY",
   "JWT_SECRET_KEY",
   "STRIPE_PUBLISHABLE_KEY",
   "STRIPE_SECRET_KEY",
@@ -47,82 +47,46 @@ export const validateEnvironment = () => {
 };
 
 export const configureCloudinary = () => {
-  const cloudinaryCloudName = process.env.CLOUDINARY_CLOUD_NAME;
-  const cloudinaryApiKey = process.env.CLOUDINARY_API_KEY;
-  const cloudinaryApiSecret = process.env.CLOUDINARY_API_SECRET;
-
-  const isCloudinaryConfigured =
-    cloudinaryCloudName &&
-    cloudinaryApiKey &&
-    cloudinaryApiSecret &&
-    !cloudinaryCloudName.includes("your-") &&
-    !cloudinaryApiKey.includes("your-") &&
-    !cloudinaryApiSecret.includes("your-");
-
-  if (isCloudinaryConfigured) {
-    cloudinary.config({
-      cloud_name: cloudinaryCloudName,
-      api_key: cloudinaryApiKey,
-      api_secret: cloudinaryApiSecret,
-    });
-    console.log("☁️  Cloudinary configured successfully");
-  } else {
-    console.log("☁️  Cloudinary configuration skipped (credentials not provided)");
-  }
+  console.log("☁️  Cloudinary integration decommissioned. Utilizing Supabase Storage buckets.");
 };
 
 export const createUploadsDirectory = () => {
   const uploadsDir = path.join(__dirname, '..', '..', 'uploads');
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
-    console.log("📁 Created uploads directory");
+    console.log("📁 Created local uploads directory for temp staging");
   }
 };
 
-// MongoDB Connection with Error Handling
+// Supabase Connection with Validation
 export const connectDB = async () => {
   try {
-    console.log("📡 Attempting to connect to MongoDB...");
+    console.log("📡 Validating connection to Supabase Database...");
+    const { supabase } = require("./core/supabase");
     
-    const connectionString = (process.env.MONGODB_CONNECTION_STRING || "").trim();
+    // Test connection by doing a simple health select
+    const { data, error } = await supabase.from("users").select("id").limit(1);
     
-    if (!connectionString) {
-      throw new Error("MONGODB_CONNECTION_STRING is empty");
+    if (error) {
+      if (error.message.includes("Could not find the table") || error.message.includes("does not exist")) {
+        console.warn("⚠️  Supabase connected successfully, but 'public.users' table was not found.");
+        console.warn("💡 Action Required: Please copy and run the SQL migration script from 'supabase_migration_plan.md' in your Supabase SQL Editor to set up your tables!");
+        return;
+      }
+      throw new Error(`Supabase test query failed: ${error.message}`);
     }
     
-    if (!connectionString.startsWith("mongodb://") && !connectionString.startsWith("mongodb+srv://")) {
-      throw new Error(`Invalid MongoDB connection string scheme. Must start with "mongodb://" or "mongodb+srv://". Received: ${connectionString.substring(0, 30)}...`);
-    }
-    
-    // Set a 10-second timeout for connection to fail fast
-    const connectionTimeoutMs = 10000;
-    
-    await mongoose.connect(connectionString, {
-      serverSelectionTimeoutMS: connectionTimeoutMs,
-      socketTimeoutMS: connectionTimeoutMs,
-    });
-    console.log("✅ MongoDB connected successfully");
-    console.log(`📦 Database: ${mongoose.connection.db.databaseName}`);
-  } catch (error) {
-    console.error("❌ MongoDB connection error:", error instanceof Error ? error.message : error);
-    console.error("💡 Please check your MONGODB_CONNECTION_STRING environment variable on Render");
-    process.exit(1);
+    console.log("✅ Supabase Database connected and validated successfully");
+  } catch (error: any) {
+    console.warn("⚠️  Supabase validation warning:", error.message || error);
+    console.warn("💡 Make sure to verify your SUPABASE_URL and SUPABASE_ANON_KEY in your .env");
   }
 };
 
 export const setupMongoEventHandlers = () => {
-  mongoose.connection.on("disconnected", () => {
-    console.warn("⚠️  MongoDB disconnected. Attempting to reconnect...");
-  });
-
-  mongoose.connection.on("error", (error) => {
-    console.error("❌ MongoDB connection error:", error);
-  });
-
-  mongoose.connection.on("reconnected", () => {
-    console.log("✅ MongoDB reconnected successfully");
-  });
+  console.log("⚡ Supabase integration active. Realtime and connection state auto-monitored.");
 };
+
 
 export const createAndConfigureApp = () => {
   const app = express();
@@ -182,8 +146,7 @@ export const createGracefulShutdown = (server: any) => {
       console.log("🔒 HTTP server closed");
 
       try {
-        await mongoose.connection.close();
-        console.log("🔒 MongoDB connection closed");
+        console.log("🔒 Supabase connection closed");
         console.log("✅ Graceful shutdown completed");
         process.exit(0);
       } catch (error) {

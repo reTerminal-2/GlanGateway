@@ -3,7 +3,8 @@ import jwt, { JwtPayload } from "jsonwebtoken";
 import IdentityVerification from "../models/identity-verification";
 import Booking from "../models/booking";
 import User from "../models/user";
-import { v2 as cloudinary } from "cloudinary";
+import { supabase } from "../core/supabase";
+import crypto from "crypto";
 import { UserRole } from "../types";
 
 const verifyToken = (req: Request, res: Response, next: NextFunction) => {
@@ -485,23 +486,46 @@ router.post("/:verificationId/upload-id", verifyToken, async (req: Request, res:
       return res.status(400).json({ message: "Image data is required" });
     }
 
-    // Upload to Cloudinary
-    const uploadResponse = await cloudinary.uploader.upload(imageData, {
-      folder: "identity-verifications",
-      resource_type: "image",
-    });
+    // Decode Base64 string to buffer
+    const base64Data = imageData.replace(/^data:image\/\w+;base64,/, "");
+    const fileBuffer = Buffer.from(base64Data, "base64");
+    
+    // Detect mime type or use default image/jpeg
+    const mimeMatch = imageData.match(/^data:(image\/\w+);base64,/);
+    const mimeType = mimeMatch ? mimeMatch[1] : "image/jpeg";
+    const ext = mimeType.split("/")[1] || "jpg";
+    
+    const uniqueName = `${crypto.randomUUID()}.${ext}`;
+    
+    console.log(`Uploading ID to Supabase bucket 'secure-documents'...`);
+    const { data, error } = await supabase.storage
+      .from('secure-documents')
+      .upload(uniqueName, fileBuffer, {
+        contentType: mimeType,
+        upsert: true
+      });
+
+    if (error) {
+      console.warn("⚠️ Supabase upload error:", error.message);
+      throw error;
+    }
+
+    // Retrieve public URL from Supabase
+    const { data: { publicUrl } } = supabase.storage
+      .from('secure-documents')
+      .getPublicUrl(uniqueName);
 
     const verification = await IdentityVerification.findById(verificationId);
     if (!verification) {
       return res.status(404).json({ message: "Verification not found" });
     }
 
-    verification.idImageUrl = uploadResponse.secure_url;
+    verification.idImageUrl = publicUrl;
     await verification.save();
 
     res.json({
       message: "ID uploaded successfully",
-      imageUrl: uploadResponse.secure_url,
+      imageUrl: publicUrl,
     });
   } catch (error) {
     console.error("Error uploading ID:", error);
