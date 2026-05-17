@@ -8,7 +8,7 @@
     "build": "vite build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
-    "start": "cd ResortManagementBooking/hotel-booking-backend && node dist/src/index.js"
+    "start": "npm run --prefix hotel-booking-backend build && node hotel-booking-backend/dist/src/index.js"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
