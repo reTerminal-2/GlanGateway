@@ -68,8 +68,10 @@
     "stripe": "^14.8.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
+    "@supabase/supabase-js": "^2.39.8",
     "ts-node": "^10.9.1",
     "typescript": "^5.2.2"
+
   },
   "devDependencies": {
     "@jest/globals": "^30.3.0",
