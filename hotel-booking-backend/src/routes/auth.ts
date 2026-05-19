@@ -42,24 +42,34 @@ const BACKEND_URL = (
  *     tags: [Authentication]
  */
 router.get("/google", (req: Request, res: Response) => {
-  if (!GOOGLE_CLIENT_ID) {
-    return res.status(500).json({ message: "Google OAuth not configured" });
+  try {
+    if (!GOOGLE_CLIENT_ID) {
+      console.error("❌ Google ID not configured");
+      return res.status(500).json({ message: "Google OAuth not configured" });
+    }
+    const state = crypto.randomBytes(32).toString("hex");
+    
+    // Store state in httpOnly cookie for CSRF protection
+    res.cookie("oauth_state", state, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax", // Changed to lax to allow Google OAuth redirect to pass the cookie back
+      maxAge: 10 * 60 * 1000, // 10 minutes
+      path: "/",
+    });
+    
+    const redirectUri = `${BACKEND_URL}/api/auth/callback/google`;
+    const scope = "openid email profile";
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${state}&access_type=offline&prompt=consent`;
+    res.redirect(url);
+  } catch (err: any) {
+    console.error("❌ Google Auth Route Error:", err);
+    res.status(500).json({
+      error: "Google Auth Init Error",
+      message: err.message,
+      stack: err.stack,
+    });
   }
-  const state = crypto.randomBytes(32).toString("hex");
-  
-  // Store state in httpOnly cookie for CSRF protection
-  res.cookie("oauth_state", state, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax", // Changed to lax to allow Google OAuth redirect to pass the cookie back
-    maxAge: 10 * 60 * 1000, // 10 minutes
-    path: "/",
-  });
-  
-  const redirectUri = `${BACKEND_URL}/api/auth/callback/google`;
-  const scope = "openid email profile";
-  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${state}&access_type=offline&prompt=consent`;
-  res.redirect(url);
 });
 
 /**
