@@ -2,6 +2,7 @@ import express, { Request, Response } from "express";
 import verifyToken from "../middleware/auth";
 import { param, validationResult, body } from "express-validator";
 import { supabaseAdmin } from "../core/supabase";
+import { formatHotelDbToApi } from "../utils/format";
 
 const router = express.Router();
 
@@ -82,18 +83,17 @@ router.get("/pending", verifyToken, async (req: Request, res: Response) => {
     }
 
     // Format the response for the frontend
-    const formattedResorts = (pendingResorts || []).map((resort: any) => ({
-      ...resort,
-      _id: resort.id,
-      userId: resort.user_id,
-      type: resort.types,
-      isApproved: resort.is_approved,
-      owner: resort.users ? {
-        firstName: resort.users.first_name,
-        lastName: resort.users.last_name,
-        email: resort.users.email
-      } : null
-    }));
+    const formattedResorts = (pendingResorts || []).map((resort: any) => {
+      const formatted = formatHotelDbToApi(resort);
+      return {
+        ...formatted,
+        owner: resort.users ? {
+          firstName: resort.users.first_name,
+          lastName: resort.users.last_name,
+          email: resort.users.email
+        } : null
+      };
+    });
 
     const total = count || 0;
     res.json({
@@ -162,12 +162,9 @@ router.get("/all", verifyToken, async (req: Request, res: Response) => {
           .eq("id", resort.user_id)
           .maybeSingle();
 
+        const formatted = formatHotelDbToApi(resort);
         return {
-          ...resort,
-          _id: resort.id,
-          userId: resort.user_id,
-          type: resort.types,
-          isApproved: resort.is_approved,
+          ...formatted,
           owner: owner ? {
             firstName: owner.first_name,
             lastName: owner.last_name,

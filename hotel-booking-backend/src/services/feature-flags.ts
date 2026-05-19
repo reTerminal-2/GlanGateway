@@ -37,6 +37,18 @@ export class FeatureFlagService {
   public static clearCache(): void {
     // No-op: no cache needed with env-var-only approach
   }
+
+  public static async createFlag(data: any): Promise<any> {
+    return { key: data.key, enabled: data.enabled || false };
+  }
+
+  public static async updateFlag(key: string, data: any): Promise<any> {
+    return { key, enabled: data.enabled || false };
+  }
+
+  public static async deleteFlag(key: string): Promise<void> {
+    return;
+  }
 }
 
 export default FeatureFlagService;

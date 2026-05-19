@@ -5,7 +5,9 @@ import verifyToken from "../middleware/auth";
 import { body } from "express-validator";
 import { HotelType } from "../types";
 import crypto from "crypto";
+import path from "path";
 import { supabaseAdmin } from "../core/supabase";
+import { formatHotelDbToApi } from "../utils/format";
 
 const router = express.Router();
 
@@ -641,12 +643,13 @@ router.get("/", verifyToken, async (req: Request, res: Response) => {
     }
 
     // Map fields so the frontend gets what it expects (_id, etc.)
-    const formattedHotels = (hotels || []).map((h: any) => ({
-      ...h,
-      _id: h.id,
-      userId: h.user_id,
-      type: h.types
-    }));
+    const formattedHotels = await Promise.all(
+      (hotels || []).map(async (h: any) => {
+        const { data: rooms } = await supabaseAdmin.from("rooms").select("*").eq("hotel_id", h.id);
+        const { data: cottages } = await supabaseAdmin.from("cottages").select("*").eq("hotel_id", h.id);
+        return formatHotelDbToApi(h, rooms || [], cottages || []);
+      })
+    );
 
     res.json(formattedHotels);
   } catch (error) {
@@ -681,40 +684,13 @@ router.get("/:id", verifyToken, async (req: Request, res: Response) => {
     const { data: amenities } = await supabaseAdmin.from("amenities").select("*").eq("hotel_id", id);
     const { data: packages } = await supabaseAdmin.from("packages").select("*").eq("hotel_id", id);
 
-    const formattedHotel = {
-      ...hotel,
-      _id: hotel.id,
-      userId: hotel.user_id,
-      type: hotel.types,
-      rooms: (rooms || []).map((r: any) => ({
-        ...r,
-        pricePerNight: r.price_per_night,
-        minOccupancy: r.min_occupancy,
-        maxOccupancy: r.max_occupancy,
-        imageUrl: r.image_url,
-        includedEntranceFee: r.included_entrance_fee
-      })),
-      cottages: (cottages || []).map((c: any) => ({
-        ...c,
-        pricePerNight: c.price_per_night,
-        minOccupancy: c.min_occupancy,
-        maxOccupancy: c.max_occupancy,
-        imageUrl: c.image_url,
-        includedEntranceFee: c.included_entrance_fee
-      })),
-      amenities: (amenities || []).map((a: any) => ({
-        ...a,
-        imageUrl: a.image_url
-      })),
-      packages: (packages || []).map((p: any) => ({
-        ...p,
-        imageUrl: p.image_url,
-        includedCottages: p.included_cottages,
-        includedRooms: p.included_rooms,
-        includedAmenities: p.included_amenities,
-        includedChildEntranceFee: p.included_child_entrance_fee
-      }))
-    };
+    const formattedHotel = formatHotelDbToApi(
+      hotel,
+      rooms || [],
+      cottages || [],
+      amenities || [],
+      packages || []
+    );
 
     res.json(formattedHotel);
   } catch (error) {
