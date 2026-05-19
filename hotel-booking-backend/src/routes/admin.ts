@@ -1,9 +1,7 @@
 import express, { Request, Response } from "express";
-import Hotel from "../models/hotel";
-import Booking from "../models/booking";
-import User from "../models/user";
 import verifyToken from "../middleware/auth";
-import { startOfDay, subDays, startOfMonth, format } from "date-fns";
+import { supabaseAdmin } from "../core/supabase";
+import { subDays, startOfMonth, format } from "date-fns";
 
 const router = express.Router();
 
@@ -75,222 +73,308 @@ router.get("/business-stats", verifyToken, async (req: Request, res: Response) =
     const { startDate, endDate } = getDateRange(timeRange);
     const { startDate: prevStartDate, endDate: prevEndDate } = getPreviousPeriod(timeRange);
 
+    const startISO = startDate.toISOString();
+    const endISO = endDate.toISOString();
+    const prevStartISO = prevStartDate.toISOString();
+    const prevEndISO = prevEndDate.toISOString();
+
     console.log("Fetching business stats for timeRange:", timeRange);
 
-    // Get current period stats
-    let totalUsers, totalResorts, totalBookings, bookings, users, resorts;
+    // ── Current period counts ──
+    const [
+      { count: totalUsers },
+      { count: totalResorts },
+      { count: totalBookings },
+    ] = await Promise.all([
+      supabaseAdmin
+        .from("users")
+        .select("*", { count: "exact", head: true })
+        .gte("created_at", startISO)
+        .lte("created_at", endISO),
+      supabaseAdmin
+        .from("hotels")
+        .select("*", { count: "exact", head: true })
+        .gte("created_at", startISO)
+        .lte("created_at", endISO),
+      supabaseAdmin
+        .from("bookings")
+        .select("*", { count: "exact", head: true })
+        .gte("created_at", startISO)
+        .lte("created_at", endISO),
+    ]);
+
+    // ── Previous period counts ──
+    const [
+      { count: prevUsers },
+      { count: prevResorts },
+      { count: prevBookings },
+    ] = await Promise.all([
+      supabaseAdmin
+        .from("users")
+        .select("*", { count: "exact", head: true })
+        .gte("created_at", prevStartISO)
+        .lte("created_at", prevEndISO),
+      supabaseAdmin
+        .from("hotels")
+        .select("*", { count: "exact", head: true })
+        .gte("created_at", prevStartISO)
+        .lte("created_at", prevEndISO),
+      supabaseAdmin
+        .from("bookings")
+        .select("*", { count: "exact", head: true })
+        .gte("created_at", prevStartISO)
+        .lte("created_at", prevEndISO),
+    ]);
+
+    // ── Total counts (all time) ──
+    const { count: allTimeUsers } = await supabaseAdmin
+      .from("users")
+      .select("*", { count: "exact", head: true });
+
+    const { count: allTimeResorts } = await supabaseAdmin
+      .from("hotels")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "approved");
+
+    // ── Revenue in current period ──
+    const { data: currentBookings } = await supabaseAdmin
+      .from("bookings")
+      .select("total_cost")
+      .gte("created_at", startISO)
+      .lte("created_at", endISO);
+
+    const totalRevenue = (currentBookings || []).reduce(
+      (sum: number, b: any) => sum + (Number(b.total_cost) || 0),
+      0
+    );
+
+    // ── Revenue in previous period ──
+    const { data: prevBookingData } = await supabaseAdmin
+      .from("bookings")
+      .select("total_cost")
+      .gte("created_at", prevStartISO)
+      .lte("created_at", prevEndISO);
+
+    const prevRevenue = (prevBookingData || []).reduce(
+      (sum: number, b: any) => sum + (Number(b.total_cost) || 0),
+      0
+    );
+
+    // ── Average rating ──
+    const { data: ratedResorts } = await supabaseAdmin
+      .from("hotels")
+      .select("star_rating")
+      .eq("status", "approved");
+
+    const totalRating = (ratedResorts || []).reduce(
+      (sum: number, r: any) => sum + (Number(r.star_rating) || 0),
+      0
+    );
+    const averageRating = ratedResorts && ratedResorts.length > 0
+      ? totalRating / ratedResorts.length
+      : 0;
+
+    // ── Occupancy rate (simplified) ──
+    const occupancyRate = (allTimeResorts || 0) > 0
+      ? ((totalBookings || 0) / ((allTimeResorts || 1) * 30)) * 100
+      : 0;
+
+    // ── Top performing resorts ──
+    let topPerformingResorts: any[] = [];
     try {
-      [totalUsers, totalResorts, totalBookings, bookings, users, resorts] = await Promise.all([
-        User.countDocuments({ createdAt: { $gte: startDate, $lte: endDate } }),
-        Hotel.countDocuments({ createdAt: { $gte: startDate, $lte: endDate } }),
-        Booking.countDocuments({ createdAt: { $gte: startDate, $lte: endDate } }),
-        Booking.find({ createdAt: { $gte: startDate, $lte: endDate } }),
-        User.find({}),
-        Hotel.find({ isApproved: true })
+      const { data: topBookings } = await supabaseAdmin
+        .from("bookings")
+        .select("hotel_id, total_cost")
+        .gte("created_at", startISO)
+        .lte("created_at", endISO);
+
+      // Group by hotel_id manually
+      const hotelStats: Record<string, { totalBookings: number; totalRevenue: number }> = {};
+      (topBookings || []).forEach((b: any) => {
+        if (!hotelStats[b.hotel_id]) {
+          hotelStats[b.hotel_id] = { totalBookings: 0, totalRevenue: 0 };
+        }
+        hotelStats[b.hotel_id].totalBookings += 1;
+        hotelStats[b.hotel_id].totalRevenue += Number(b.total_cost) || 0;
+      });
+
+      // Sort by revenue and take top 5
+      const sortedHotelIds = Object.entries(hotelStats)
+        .sort((a, b) => b[1].totalRevenue - a[1].totalRevenue)
+        .slice(0, 5);
+
+      if (sortedHotelIds.length > 0) {
+        const hotelIds = sortedHotelIds.map(([id]) => id);
+        const { data: hotels } = await supabaseAdmin
+          .from("hotels")
+          .select("id, name, star_rating")
+          .in("id", hotelIds);
+
+        const hotelMap: Record<string, any> = {};
+        (hotels || []).forEach((h: any) => { hotelMap[h.id] = h; });
+
+        topPerformingResorts = sortedHotelIds.map(([id, stats]) => ({
+          _id: id,
+          name: hotelMap[id]?.name || "Unknown Resort",
+          totalBookings: stats.totalBookings,
+          totalRevenue: stats.totalRevenue,
+          averageRating: hotelMap[id]?.star_rating || 0,
+          occupancyRate: 0,
+        }));
+      }
+    } catch (err) {
+      console.error("Error fetching top performing resorts:", err);
+    }
+
+    // ── Recent bookings ──
+    let recentBookingsFormatted: any[] = [];
+    try {
+      const { data: recentBookings } = await supabaseAdmin
+        .from("bookings")
+        .select("id, hotel_id, user_id, first_name, last_name, total_cost, status, created_at")
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      if (recentBookings && recentBookings.length > 0) {
+        // Fetch hotel names
+        const hotelIds = [...new Set(recentBookings.map((b: any) => b.hotel_id))];
+        const { data: hotels } = await supabaseAdmin
+          .from("hotels")
+          .select("id, name")
+          .in("id", hotelIds);
+
+        const hotelMap: Record<string, string> = {};
+        (hotels || []).forEach((h: any) => { hotelMap[h.id] = h.name; });
+
+        recentBookingsFormatted = recentBookings.map((booking: any) => ({
+          _id: booking.id,
+          hotelName: hotelMap[booking.hotel_id] || "Unknown",
+          userName: `${booking.first_name || ""} ${booking.last_name || ""}`.trim(),
+          totalCost: Number(booking.total_cost) || 0,
+          status: booking.status || "pending",
+          createdAt: booking.created_at,
+        }));
+      }
+    } catch (err) {
+      console.error("Error fetching recent bookings:", err);
+    }
+
+    // ── User distribution ──
+    let userDistribution = { users: 0, admins: 0, superAdmins: 0 };
+    try {
+      const [
+        { count: userCount },
+        { count: ownerCount },
+        { count: adminCount },
+      ] = await Promise.all([
+        supabaseAdmin.from("users").select("*", { count: "exact", head: true }).eq("role", "user"),
+        supabaseAdmin.from("users").select("*", { count: "exact", head: true }).eq("role", "resort_owner"),
+        supabaseAdmin.from("users").select("*", { count: "exact", head: true }).in("role", ["admin", "superAdmin"]),
       ]);
-      console.log("Basic stats fetched successfully");
-    } catch (dbError) {
-      console.error("Error fetching basic stats:", dbError);
-      throw dbError;
+      userDistribution = {
+        users: userCount || 0,
+        admins: ownerCount || 0,
+        superAdmins: adminCount || 0,
+      };
+    } catch (err) {
+      console.error("Error fetching user distribution:", err);
     }
 
-    // Get previous period stats for growth calculation
-    let prevUsers, prevResorts, prevBookings;
-    try {
-      [prevUsers, prevResorts, prevBookings] = await Promise.all([
-        User.countDocuments({ createdAt: { $gte: prevStartDate, $lte: prevEndDate } }),
-        Hotel.countDocuments({ createdAt: { $gte: prevStartDate, $lte: prevEndDate } }),
-        Booking.countDocuments({ createdAt: { $gte: prevStartDate, $lte: prevEndDate } })
-      ]);
-      console.log("Previous period stats fetched successfully");
-    } catch (prevError) {
-      console.error("Error fetching previous period stats:", prevError);
-      throw prevError;
-    }
-
-    // Calculate total revenue
-    const totalRevenue = bookings.reduce((sum, booking) => sum + (booking.totalCost || 0), 0);
-    let prevRevenue = 0;
-    try {
-      prevRevenue = await Booking.aggregate([
-        { $match: { createdAt: { $gte: prevStartDate, $lte: prevEndDate } } },
-        { $group: { _id: null, total: { $sum: "$totalCost" } } }
-      ]).then(result => result[0]?.total || 0);
-    } catch (revError) {
-      console.error("Error calculating previous revenue:", revError);
-      prevRevenue = 0;
-    }
-
-    // Calculate average rating
-    const totalRating = resorts.reduce((sum, resort) => sum + (resort.averageRating || 0), 0);
-    const averageRating = resorts.length > 0 ? totalRating / resorts.length : 0;
-
-    // Calculate occupancy rate (simplified - based on actual bookings vs estimated capacity)
-    const totalPossibleBookings = resorts.reduce((sum, resort) => {
-      const daysInPeriod = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
-      // Estimate capacity based on rooms and cottages (10 guests per room/cottage as a reasonable average)
-      const estimatedCapacity = ((resort.rooms?.length || 0) + (resort.cottages?.length || 0)) * 10 * daysInPeriod;
-      return sum + Math.max(estimatedCapacity, 100 * daysInPeriod); // Minimum capacity fallback
-    }, 0);
-    const occupancyRate = totalPossibleBookings > 0 ? (totalBookings / totalPossibleBookings) * 100 : 0;
-
-    // Get top performing resorts
-    let topPerformingResorts = [];
-    try {
-      const resortStats = await Booking.aggregate([
-        { $match: { createdAt: { $gte: startDate, $lte: endDate } } },
-        { $group: {
-          _id: "$hotelId",
-          totalBookings: { $sum: 1 },
-          totalRevenue: { $sum: "$totalCost" }
-        }},
-        { $sort: { totalRevenue: -1 } },
-        { $limit: 5 },
-        { $lookup: {
-          from: "hotels",
-          localField: "_id",
-          foreignField: "_id",
-          as: "hotel"
-        }},
-        { $unwind: "$hotel" }
-      ]);
-
-      topPerformingResorts = resortStats.map(stat => ({
-        _id: stat._id,
-        name: stat.hotel.name,
-        totalBookings: stat.totalBookings,
-        totalRevenue: stat.totalRevenue,
-        averageRating: stat.hotel.averageRating || 0,
-        occupancyRate: 0 // Simplified for now
-      }));
-    } catch (resortError) {
-      console.error("Error fetching top performing resorts:", resortError);
-      topPerformingResorts = [];
-    }
-
-    // Get recent bookings
-    let recentBookingsFormatted = [];
-    try {
-      const recentBookings = await Booking.find({})
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .populate('hotelId', 'name')
-        .populate('userId', 'firstName lastName');
-
-      recentBookingsFormatted = recentBookings.map(booking => ({
-        _id: booking._id,
-        hotelName: (booking.hotelId as any)?.name || 'Unknown',
-        userName: `${(booking.userId as any)?.firstName} ${(booking.userId as any)?.lastName}`,
-        totalCost: booking.totalCost,
-        status: booking.status || 'pending',
-        createdAt: booking.createdAt
-      }));
-    } catch (bookingError) {
-      console.error("Error fetching recent bookings:", bookingError);
-      recentBookingsFormatted = [];
-    }
-
-    // Get user distribution
-    let userDistribution = [0, 0, 0];
-    try {
-      userDistribution = await Promise.all([
-        User.countDocuments({ role: 'user' }),
-        User.countDocuments({ role: 'resort_owner' }),
-        User.countDocuments({ role: 'admin' })
-      ]);
-    } catch (userError) {
-      console.error("Error fetching user distribution:", userError);
-      userDistribution = [0, 0, 0];
-    }
-
-    // Get revenue by month (last 6 months)
-    const revenueByMonth = [];
+    // ── Revenue by month (last 6 months) ──
+    const revenueByMonth: any[] = [];
     try {
       for (let i = 5; i >= 0; i--) {
         const monthStart = startOfMonth(subDays(new Date(), i * 30));
         const monthEnd = new Date(monthStart);
         monthEnd.setMonth(monthEnd.getMonth() + 1);
-        monthEnd.setDate(0);
 
-        const monthBookings = await Booking.find({
-          createdAt: { $gte: monthStart, $lte: monthEnd }
-        });
+        const { data: monthBookings } = await supabaseAdmin
+          .from("bookings")
+          .select("total_cost")
+          .gte("created_at", monthStart.toISOString())
+          .lt("created_at", monthEnd.toISOString());
 
-        const monthRevenue = monthBookings.reduce((sum, booking) => sum + (booking.totalCost || 0), 0);
+        const monthRevenue = (monthBookings || []).reduce(
+          (sum: number, b: any) => sum + (Number(b.total_cost) || 0),
+          0
+        );
 
         revenueByMonth.push({
-          month: format(monthStart, 'MMM yyyy'),
+          month: format(monthStart, "MMM yyyy"),
           revenue: monthRevenue,
-          bookings: monthBookings.length
+          bookings: (monthBookings || []).length,
         });
       }
-    } catch (monthError) {
-      console.error("Error calculating revenue by month:", monthError);
+    } catch (err) {
+      console.error("Error calculating revenue by month:", err);
     }
 
-    // Get popular destinations
-    let popularDestinations = [];
+    // ── Popular destinations ──
+    let popularDestinations: any[] = [];
     try {
-      popularDestinations = await Booking.aggregate([
-        { $match: { createdAt: { $gte: startDate, $lte: endDate } } },
-        { $lookup: {
-          from: "hotels",
-          localField: "hotelId",
-          foreignField: "_id",
-          as: "hotel"
-        }},
-        { $unwind: "$hotel" },
-        { $group: {
-          _id: {
-            city: "$hotel.city",
-            country: "$hotel.country"
-          },
-          totalBookings: { $sum: 1 },
-          resortCount: { $addToSet: "$hotelId" }
-        }},
-        { $project: {
-          city: "$_id.city",
-          country: "$_id.country",
-          totalBookings: 1,
-          resortCount: { $size: "$resortCount" }
-        }},
-        { $sort: { totalBookings: -1 } },
-        { $limit: 5 }
-      ]);
-    } catch (aggError) {
-      console.error("Error in popularDestinations aggregation:", aggError);
-      // Fallback to empty array if aggregation fails
-      popularDestinations = [];
+      const { data: bookingsWithHotels } = await supabaseAdmin
+        .from("bookings")
+        .select("hotel_id")
+        .gte("created_at", startISO)
+        .lte("created_at", endISO);
+
+      if (bookingsWithHotels && bookingsWithHotels.length > 0) {
+        const hotelIds = [...new Set(bookingsWithHotels.map((b: any) => b.hotel_id))];
+        const { data: hotels } = await supabaseAdmin
+          .from("hotels")
+          .select("id, city, country")
+          .in("id", hotelIds);
+
+        // Count bookings per city
+        const cityStats: Record<string, { city: string; country: string; totalBookings: number; resortIds: Set<string> }> = {};
+        (bookingsWithHotels || []).forEach((b: any) => {
+          const hotel = (hotels || []).find((h: any) => h.id === b.hotel_id);
+          if (hotel) {
+            const key = `${hotel.city}-${hotel.country}`;
+            if (!cityStats[key]) {
+              cityStats[key] = { city: hotel.city, country: hotel.country, totalBookings: 0, resortIds: new Set() };
+            }
+            cityStats[key].totalBookings += 1;
+            cityStats[key].resortIds.add(b.hotel_id);
+          }
+        });
+
+        popularDestinations = Object.values(cityStats)
+          .map(s => ({ city: s.city, country: s.country, totalBookings: s.totalBookings, resortCount: s.resortIds.size }))
+          .sort((a, b) => b.totalBookings - a.totalBookings)
+          .slice(0, 5);
+      }
+    } catch (err) {
+      console.error("Error in popularDestinations:", err);
     }
 
     const response = {
-      totalUsers: users.length,
-      totalResorts: resorts.length,
-      totalBookings,
+      totalUsers: allTimeUsers || 0,
+      totalResorts: allTimeResorts || 0,
+      totalBookings: totalBookings || 0,
       totalRevenue,
       averageRating,
-      occupancyRate,
+      occupancyRate: Math.min(occupancyRate, 100),
       monthlyGrowth: {
-        users: calculateGrowth(totalUsers, prevUsers),
-        resorts: calculateGrowth(totalResorts, prevResorts),
-        bookings: calculateGrowth(totalBookings, prevBookings),
-        revenue: calculateGrowth(totalRevenue, prevRevenue)
+        users: calculateGrowth(totalUsers || 0, prevUsers || 0),
+        resorts: calculateGrowth(totalResorts || 0, prevResorts || 0),
+        bookings: calculateGrowth(totalBookings || 0, prevBookings || 0),
+        revenue: calculateGrowth(totalRevenue, prevRevenue),
       },
       topPerformingResorts,
       recentBookings: recentBookingsFormatted,
-      userDistribution: {
-        users: userDistribution[0],
-        admins: userDistribution[1],
-        superAdmins: userDistribution[2]
-      },
+      userDistribution,
       revenueByMonth,
-      popularDestinations
+      popularDestinations,
     };
 
     res.json(response);
   } catch (error) {
     console.error("Error fetching business stats:", error);
-    res.status(500).json({ message: "Something went wrong", error: error instanceof Error ? error.message : String(error) });
+    res.status(500).json({
+      message: "Something went wrong",
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 });
 

@@ -453,4 +453,92 @@ router.patch(
   })
 );
 
+// Verify GCash payment endpoint
+router.patch(
+  "/:id/gcash/verify",
+  verifyToken,
+  asyncHandler(async (req: Request, res: Response) => {
+    const bookingId = req.params.id;
+    const { status, rejectionReason } = req.body;
+
+    if (!["verified", "rejected"].includes(status)) {
+      return res.status(400).json({ message: "Invalid status. Must be 'verified' or 'rejected'." });
+    }
+
+    // Find the booking
+    const { data: booking, error } = await supabaseAdmin
+      .from("bookings")
+      .select("*, hotels(user_id)")
+      .eq("id", bookingId)
+      .maybeSingle();
+
+    if (error || !booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    if (booking.payment_method !== "gcash") {
+      return res.status(400).json({ message: "This is not a GCash booking" });
+    }
+
+    // Check authorization: hotel owner or admin
+    const { data: user } = await supabaseAdmin
+      .from("users")
+      .select("role")
+      .eq("id", req.userId)
+      .maybeSingle();
+
+    const isHotelOwner = booking.hotels && booking.hotels.user_id === req.userId;
+    const isAdmin = user && ["admin", "superAdmin"].includes(user.role);
+
+    if (!isHotelOwner && !isAdmin) {
+      return res.status(403).json({ message: "Access denied. Only hotel owners or admins can verify GCash payments." });
+    }
+
+    // Build update data
+    const updateData: any = {};
+
+    // Update GCash payment status within the JSONB column
+    const gcashPayment = booking.gcash_payment || {};
+    if (status === "verified") {
+      gcashPayment.status = "verified";
+      updateData.payment_status = "paid";
+      updateData.status = "confirmed";
+      updateData.verified_by_owner = true;
+      updateData.owner_verification_note = "GCash payment verified";
+      updateData.owner_verified_at = new Date().toISOString();
+    } else {
+      gcashPayment.status = "rejected";
+      if (rejectionReason) {
+        gcashPayment.rejection_reason = rejectionReason;
+      }
+      updateData.payment_status = "failed";
+      updateData.status = "cancelled";
+      updateData.cancellation_reason = rejectionReason || "GCash payment rejected";
+    }
+
+    updateData.gcash_payment = gcashPayment;
+
+    const { data: updatedBooking, error: updateError } = await supabaseAdmin
+      .from("bookings")
+      .update(updateData)
+      .eq("id", bookingId)
+      .select()
+      .maybeSingle();
+
+    if (updateError || !updatedBooking) {
+      console.error("❌ GCash verify error:", updateError);
+      return res.status(500).json({ message: "Failed to verify GCash payment" });
+    }
+
+    res.status(200).json({
+      message: `GCash payment ${status} successfully`,
+      booking: {
+        ...updatedBooking,
+        _id: updatedBooking.id
+      }
+    });
+  })
+);
+
 export default router;
+

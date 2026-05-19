@@ -1,5 +1,5 @@
 import express, { Request, Response } from "express";
-import mongoose from "mongoose";
+import { supabaseAdmin } from "../core/supabase";
 import { asyncHandler } from "../middleware/errorHandler";
 
 const router = express.Router();
@@ -14,50 +14,11 @@ const router = express.Router();
  *     responses:
  *       200:
  *         description: API is healthy
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   example: "healthy"
- *                 timestamp:
- *                   type: string
- *                   format: date-time
- *                 uptime:
- *                   type: number
- *                   description: Server uptime in seconds
- *                 database:
- *                   type: object
- *                   properties:
- *                     status:
- *                       type: string
- *                       example: "connected"
- *                     collections:
- *                       type: number
- *                       description: Number of collections in database
- *                 memory:
- *                   type: object
- *                   properties:
- *                     used:
- *                       type: number
- *                       description: Memory usage in MB
- *                     total:
- *                       type: number
- *                       description: Total memory in MB
- *                     percentage:
- *                       type: number
- *                       description: Memory usage percentage
- *       503:
- *         description: API is unhealthy
  */
 router.get("/", asyncHandler(async (req: Request, res: Response) => {
   // Check database connection
-  const dbStatus =
-    mongoose.connection.readyState === 1 ? "connected" : "disconnected";
-  const collections =
-    (await mongoose.connection.db?.listCollections().toArray()) || [];
+  const { data, error } = await supabaseAdmin.from("users").select("id").limit(1);
+  const dbStatus = error ? "disconnected" : "connected";
 
   // Get memory usage
   const memUsage = process.memoryUsage();
@@ -74,8 +35,7 @@ router.get("/", asyncHandler(async (req: Request, res: Response) => {
     uptime: Math.round(uptime),
     database: {
       status: dbStatus,
-      collections: collections.length,
-      name: mongoose.connection.name || "hotel-booking",
+      name: "Supabase PostgreSQL",
     },
     memory: {
       used: usedMemoryMB,
@@ -105,6 +65,8 @@ router.get("/detailed", async (req: Request, res: Response) => {
   try {
     const memUsage = process.memoryUsage();
     const cpuUsage = process.cpuUsage();
+    const { data, error } = await supabaseAdmin.from("users").select("id").limit(1);
+    const dbStatus = error ? "disconnected" : "connected";
 
     const detailedHealth = {
       status: "healthy",
@@ -129,12 +91,9 @@ router.get("/detailed", async (req: Request, res: Response) => {
         uptime: Math.round(process.uptime()),
       },
       database: {
-        status:
-          mongoose.connection.readyState === 1 ? "connected" : "disconnected",
-        readyState: mongoose.connection.readyState,
-        host: mongoose.connection.host,
-        port: mongoose.connection.port,
-        name: mongoose.connection.name,
+        status: dbStatus,
+        host: "Supabase",
+        name: "PostgreSQL",
       },
     };
 

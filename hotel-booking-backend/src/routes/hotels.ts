@@ -310,11 +310,17 @@ router.post(
         });
       }
 
+      // Extract selected items from the frontend payload
+      const selectedItems = req.body.selectedItems || [];
+      const selectedRooms = req.body.selectedRooms || selectedItems.filter((i: any) => i.type === 'room');
+      const selectedCottages = req.body.selectedCottages || selectedItems.filter((i: any) => i.type === 'cottage');
+      const selectedAmenities = req.body.selectedAmenities || selectedItems.filter((i: any) => i.type === 'amenity');
+
       const bookingId = crypto.randomUUID();
       const checkInDate = new Date(req.body.checkIn).toISOString();
       const checkOutDate = new Date(req.body.checkOut).toISOString();
 
-      const newBooking = {
+      const newBooking: Record<string, any> = {
         id: bookingId,
         user_id: req.userId,
         hotel_id: req.params.hotelId,
@@ -330,26 +336,30 @@ router.post(
         check_out_time: req.body.checkOutTime || "11:00",
         total_cost: Number(req.body.totalCost),
         base_price: Number(req.body.basePrice) || Number(req.body.totalCost),
-        room_ids: req.body.roomIds || [],
-        cottage_ids: req.body.cottageIds || [],
-        selected_rooms: req.body.selectedRooms || [],
-        selected_amenities: req.body.selectedAmenities || [],
+        room_ids: req.body.roomIds || selectedRooms.map((r: any) => r.id),
+        cottage_ids: req.body.cottageIds || selectedCottages.map((c: any) => c.id),
+        selected_rooms: selectedRooms,
+        selected_cottages: selectedCottages,
+        selected_amenities: selectedAmenities,
+        special_requests: req.body.specialRequests || "",
         status: "confirmed",
         payment_status: "paid",
         payment_method: "card",
         is_pwd_booking: req.body.isPwdBooking || false,
         is_senior_citizen_booking: req.body.isSeniorCitizenBooking || false,
-        discount_applied: req.body.discountApplied || { type: null, percentage: 0, amount: 0 }
+        discount_applied: req.body.discountApplied || { type: null, percentage: 0, amount: 0 },
+        change_window_deadline: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
+        can_modify: true
       };
 
-      console.log("📡 Creating booking in Supabase public.bookings...");
+      console.log("📡 Creating card booking in Supabase public.bookings...");
       const { error: bookingInsertError } = await supabaseAdmin
         .from("bookings")
         .insert(newBooking);
 
       if (bookingInsertError) {
         console.error("❌ Supabase booking insert error:", bookingInsertError);
-        return res.status(500).json({ message: "Failed to create booking" });
+        return res.status(500).json({ message: "Failed to create booking", error: bookingInsertError.message });
       }
 
       // Update hotel analytics
@@ -388,7 +398,7 @@ router.post(
         })
         .eq("id", req.userId);
 
-      console.log("✅ Booking created successfully:", bookingId);
+      console.log("✅ Card booking created successfully:", bookingId);
       res.status(200).json({ 
         message: "Booking created successfully",
         bookingId: bookingId,
@@ -401,6 +411,185 @@ router.post(
       console.error("Booking creation error:", error);
       res.status(500).json({ 
         message: "Failed to create booking. Please try again.",
+        error: error.message
+      });
+    }
+  }
+);
+
+// ==================== GCash Booking Endpoint ====================
+router.post(
+  "/:hotelId/bookings/gcash",
+  verifyToken,
+  async (req: Request, res: Response) => {
+    try {
+      const { hotelId } = req.params;
+      const userId = req.userId;
+
+      console.log("📡 GCash Booking request received:", {
+        hotelId,
+        userId,
+        body: Object.keys(req.body)
+      });
+
+      // Verify hotel exists
+      const { data: hotel, error: hotelError } = await supabaseAdmin
+        .from("hotels")
+        .select("id, name")
+        .eq("id", hotelId)
+        .maybeSingle();
+
+      if (hotelError || !hotel) {
+        return res.status(404).json({ message: "Hotel not found" });
+      }
+
+      // Handle both JSON body and multipart form data
+      const firstName = req.body.firstName || req.body.first_name;
+      const lastName = req.body.lastName || req.body.last_name;
+      const email = req.body.email;
+      const phone = req.body.phone || "";
+      const adultCount = Number(req.body.adultCount || req.body.adult_count) || 1;
+      const childCount = Number(req.body.childCount || req.body.child_count) || 0;
+      const checkIn = req.body.checkIn || req.body.check_in;
+      const checkOut = req.body.checkOut || req.body.check_out;
+      const checkInTime = req.body.checkInTime || req.body.check_in_time || "12:00";
+      const checkOutTime = req.body.checkOutTime || req.body.check_out_time || "11:00";
+      const totalCost = Number(req.body.totalCost || req.body.total_cost) || 0;
+      const basePrice = Number(req.body.basePrice || req.body.base_price) || totalCost;
+      const specialRequests = req.body.specialRequests || req.body.special_requests || "";
+
+      // Parse selected items from frontend
+      const selectedItems = req.body.selectedItems || [];
+      let selectedRooms = req.body.selectedRooms;
+      let selectedCottages = req.body.selectedCottages;
+      let selectedAmenities = req.body.selectedAmenities;
+
+      // If selectedRooms is a JSON string (from FormData), parse it
+      if (typeof selectedRooms === 'string') {
+        try { selectedRooms = JSON.parse(selectedRooms); } catch { selectedRooms = []; }
+      }
+      if (typeof selectedCottages === 'string') {
+        try { selectedCottages = JSON.parse(selectedCottages); } catch { selectedCottages = []; }
+      }
+      if (typeof selectedAmenities === 'string') {
+        try { selectedAmenities = JSON.parse(selectedAmenities); } catch { selectedAmenities = []; }
+      }
+
+      // Fall back to selectedItems if individual arrays aren't provided
+      if (!selectedRooms || !Array.isArray(selectedRooms)) {
+        selectedRooms = selectedItems.filter((i: any) => i.type === 'room');
+      }
+      if (!selectedCottages || !Array.isArray(selectedCottages)) {
+        selectedCottages = selectedItems.filter((i: any) => i.type === 'cottage');
+      }
+      if (!selectedAmenities || !Array.isArray(selectedAmenities)) {
+        selectedAmenities = selectedItems.filter((i: any) => i.type === 'amenity');
+      }
+
+      // Parse GCash payment details
+      const gcashPayment = req.body.gcashPayment || {};
+      const gcashNumber = gcashPayment.gcashNumber || req.body['gcashPayment.gcashNumber'] || "";
+      const referenceNumber = gcashPayment.referenceNumber || req.body['gcashPayment.referenceNumber'] || "";
+      const amountPaid = Number(gcashPayment.amountPaid || req.body['gcashPayment.amountPaid']) || totalCost;
+
+      const bookingId = crypto.randomUUID();
+      const checkInDate = new Date(checkIn).toISOString();
+      const checkOutDate = new Date(checkOut).toISOString();
+
+      const newBooking: Record<string, any> = {
+        id: bookingId,
+        user_id: userId,
+        hotel_id: hotelId,
+        first_name: firstName,
+        last_name: lastName,
+        email: email,
+        phone: phone,
+        adult_count: adultCount,
+        child_count: childCount,
+        check_in: checkInDate,
+        check_out: checkOutDate,
+        check_in_time: checkInTime,
+        check_out_time: checkOutTime,
+        total_cost: totalCost,
+        base_price: basePrice,
+        room_ids: selectedRooms.map((r: any) => r.id),
+        cottage_ids: selectedCottages.map((c: any) => c.id),
+        selected_rooms: selectedRooms,
+        selected_cottages: selectedCottages,
+        selected_amenities: selectedAmenities,
+        special_requests: specialRequests,
+        status: "pending",
+        payment_status: "pending",
+        payment_method: "gcash",
+        gcash_payment: {
+          gcash_number: gcashNumber,
+          reference_number: referenceNumber,
+          amount_paid: amountPaid,
+          payment_time: new Date().toISOString(),
+          status: "pending"
+        },
+        is_pwd_booking: req.body.isPwdBooking || false,
+        is_senior_citizen_booking: req.body.isSeniorCitizenBooking || false,
+        change_window_deadline: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
+        can_modify: true
+      };
+
+      console.log("📡 Creating GCash booking in Supabase...");
+      const { error: bookingInsertError } = await supabaseAdmin
+        .from("bookings")
+        .insert(newBooking);
+
+      if (bookingInsertError) {
+        console.error("❌ Supabase GCash booking insert error:", bookingInsertError);
+        return res.status(500).json({ 
+          message: "Failed to create GCash booking",
+          error: bookingInsertError.message
+        });
+      }
+
+      // Update hotel analytics
+      const { data: currentHotel } = await supabaseAdmin
+        .from("hotels")
+        .select("total_bookings")
+        .eq("id", hotelId)
+        .maybeSingle();
+
+      await supabaseAdmin
+        .from("hotels")
+        .update({
+          total_bookings: (currentHotel?.total_bookings || 0) + 1
+        })
+        .eq("id", hotelId);
+
+      // Update user analytics
+      const { data: currentUser } = await supabaseAdmin
+        .from("users")
+        .select("total_bookings")
+        .eq("id", userId)
+        .maybeSingle();
+
+      await supabaseAdmin
+        .from("users")
+        .update({
+          total_bookings: (currentUser?.total_bookings || 0) + 1
+        })
+        .eq("id", userId);
+
+      console.log("✅ GCash booking created successfully:", bookingId);
+
+      res.status(201).json({
+        message: "GCash booking created successfully. Payment is pending verification.",
+        bookingId: bookingId,
+        _id: bookingId,
+        booking: {
+          ...newBooking,
+          _id: bookingId
+        }
+      });
+    } catch (error: any) {
+      console.error("GCash booking creation error:", error);
+      res.status(500).json({
+        message: "Failed to create GCash booking. Please try again.",
         error: error.message
       });
     }

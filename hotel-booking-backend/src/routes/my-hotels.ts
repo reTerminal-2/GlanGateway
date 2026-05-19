@@ -758,316 +758,238 @@ router.put(
   async (req: Request, res: Response) => {
     try {
       console.log("=== PUT /api/my-hotels/:hotelId/json called ===");
-      console.log("Request body:", req.body);
-      console.log("Hotel ID:", req.params.hotelId);
-      console.log("User ID:", req.userId);
-      
-      // Debug cottages specifically
-      if (req.body.cottages) {
-        console.log("Cottages being saved:", req.body.cottages);
-        req.body.cottages.forEach((cottage: any, index: number) => {
-          console.log(`Cottage ${index} being saved:`, {
-            id: cottage.id,
-            name: cottage.name,
-            hasDayRate: cottage.hasDayRate,
-            hasNightRate: cottage.hasNightRate,
-            dayRate: cottage.dayRate,
-            nightRate: cottage.nightRate
-          });
-        });
-      }
 
-      // First, find the existing hotel
-      const existingHotel = await Hotel.findOne({
-        _id: req.params.hotelId,
-        userId: req.userId,
-      });
+      // Verify the hotel exists and belongs to this user
+      const { data: existingHotel, error: findError } = await supabaseAdmin
+        .from("hotels")
+        .select("*")
+        .eq("id", req.params.hotelId)
+        .eq("user_id", req.userId)
+        .maybeSingle();
 
-      if (!existingHotel) {
+      if (findError || !existingHotel) {
         return res.status(404).json({ message: "Hotel not found" });
       }
 
-      // Prepare update data with all fields including rooms, cottages, and packages
-      const updateData: any = {
-        ...req.body,
-        lastUpdated: new Date(),
-      };
+      const updateData: any = { ...req.body };
 
-      // Remove fields that don't exist in HotelType
+      // Remove fields that shouldn't be directly updated
       delete updateData.adultCount;
       delete updateData.childCount;
+      delete updateData._id;
+      delete updateData.id;
+      delete updateData.userId;
+      delete updateData.user_id;
 
-      // Ensure imageUrls is always present and valid
-      if (!updateData.imageUrls || !Array.isArray(updateData.imageUrls) || updateData.imageUrls.length === 0) {
-        // Keep existing image URLs if none provided
-        updateData.imageUrls = existingHotel.imageUrls || [];
-      }
-
-      // Explicitly handle array fields to ensure they remain as arrays
-      // These fields are sent as proper object arrays from frontend and should not be stringified
+      // Parse JSON strings if needed
       const arrayFields = ['rooms', 'cottages', 'packages', 'amenities', 'childEntranceFee'];
-      console.log("Processing arrayFields:", arrayFields);
       for (const field of arrayFields) {
-        if (updateData[field]) {
-          // If it's a string, try to parse it as JSON
-          if (typeof updateData[field] === 'string') {
-            try {
-              updateData[field] = JSON.parse(updateData[field]);
-              console.log(`Parsed ${field} from string to array:`, updateData[field]);
-            } catch (parseError) {
-              console.log(`Failed to parse ${field} as JSON, keeping as is:`, updateData[field]);
-            }
-          }
-          
-          // Now ensure all nested objects have proper types
-          if (Array.isArray(updateData[field])) {
-            updateData[field] = updateData[field].map((item: any) => {
-              const processedItem: any = { ...item };
-              
-              // For rooms: convert pricePerNight, minOccupancy, maxOccupancy to numbers
-              if (field === 'rooms') {
-                if (processedItem.pricePerNight !== undefined) {
-                  processedItem.pricePerNight = Number(processedItem.pricePerNight) || 0;
-                }
-                if (processedItem.minOccupancy !== undefined) {
-                  processedItem.minOccupancy = Number(processedItem.minOccupancy) || 1;
-                }
-                if (processedItem.maxOccupancy !== undefined) {
-                  processedItem.maxOccupancy = Number(processedItem.maxOccupancy) || 1;
-                }
-              }
-              
-              // For cottages: convert pricePerNight, dayRate, nightRate, minOccupancy, maxOccupancy to numbers
-              if (field === 'cottages') {
-                if (processedItem.pricePerNight !== undefined) {
-                  processedItem.pricePerNight = Number(processedItem.pricePerNight) || 0;
-                }
-                if (processedItem.dayRate !== undefined) {
-                  processedItem.dayRate = Number(processedItem.dayRate) || 0;
-                }
-                if (processedItem.nightRate !== undefined) {
-                  processedItem.nightRate = Number(processedItem.nightRate) || 0;
-                }
-                if (processedItem.minOccupancy !== undefined) {
-                  processedItem.minOccupancy = Number(processedItem.minOccupancy) || 1;
-                }
-                if (processedItem.maxOccupancy !== undefined) {
-                  processedItem.maxOccupancy = Number(processedItem.maxOccupancy) || 1;
-                }
-                if (processedItem.hasDayRate !== undefined) {
-                  processedItem.hasDayRate = processedItem.hasDayRate === true || processedItem.hasDayRate === 'true';
-                }
-                if (processedItem.hasNightRate !== undefined) {
-                  processedItem.hasNightRate = processedItem.hasNightRate === true || processedItem.hasNightRate === 'true';
-                }
-              }
-              
-              // For packages: convert price to number and handle boolean fields
-              if (field === 'packages') {
-                if (processedItem.price !== undefined) {
-                  processedItem.price = Number(processedItem.price) || 0;
-                }
-                if (processedItem.includedAdultEntranceFee !== undefined) {
-                  processedItem.includedAdultEntranceFee = processedItem.includedAdultEntranceFee === true || processedItem.includedAdultEntranceFee === 'true';
-                }
-                if (processedItem.includedChildEntranceFee !== undefined) {
-                  processedItem.includedChildEntranceFee = processedItem.includedChildEntranceFee === true || processedItem.includedChildEntranceFee === 'true';
-                }
-              }
-              
-              // For amenities: convert price to number
-              if (field === 'amenities') {
-                if (processedItem.price !== undefined) {
-                  processedItem.price = Number(processedItem.price) || 0;
-                }
-              }
-              
-              // For childEntranceFee: convert numbers and handle boolean fields
-              if (field === 'childEntranceFee') {
-                if (processedItem.minAge !== undefined) {
-                  processedItem.minAge = Number(processedItem.minAge) || 0;
-                }
-                if (processedItem.maxAge !== undefined) {
-                  processedItem.maxAge = Number(processedItem.maxAge) || 0;
-                }
-                if (processedItem.dayRate !== undefined) {
-                  processedItem.dayRate = Number(processedItem.dayRate) || 0;
-                }
-                if (processedItem.nightRate !== undefined) {
-                  processedItem.nightRate = Number(processedItem.nightRate) || 0;
-                }
-                if (processedItem.groupQuantity !== undefined) {
-                  processedItem.groupQuantity = Number(processedItem.groupQuantity) || 1;
-                }
-                if (processedItem.isConfirmed !== undefined) {
-                  processedItem.isConfirmed = processedItem.isConfirmed === true || processedItem.isConfirmed === 'true';
-                }
-              }
-              
-              return processedItem;
-            });
-          }
+        if (updateData[field] && typeof updateData[field] === 'string') {
+          try { updateData[field] = JSON.parse(updateData[field]); } catch { /* keep as-is */ }
         }
       }
 
-      // Handle policies specially - it might come as a stringified JSON object
-      if (updateData.policies) {
-        console.log("Processing policies field:", typeof updateData.policies);
-        if (typeof updateData.policies === 'string') {
-          try {
-            updateData.policies = JSON.parse(updateData.policies);
-            console.log("Parsed policies from string:", updateData.policies);
-          } catch (e) {
-            console.log("Failed to parse policies:", e);
-            updateData.policies = {};
-          }
-        }
-        
-        // Now process resortPolicies if it exists
-        if (updateData.policies && updateData.policies.resortPolicies) {
-          if (typeof updateData.policies.resortPolicies === 'string') {
-            try {
-              updateData.policies.resortPolicies = JSON.parse(updateData.policies.resortPolicies);
-              console.log("Parsed resortPolicies from string:", updateData.policies.resortPolicies);
-            } catch (e) {
-              console.log("Failed to parse resortPolicies:", e);
-              updateData.policies.resortPolicies = [];
-            }
-          }
-          if (!Array.isArray(updateData.policies.resortPolicies)) {
-            updateData.policies.resortPolicies = [];
-          }
-          console.log("Final resortPolicies:", updateData.policies.resortPolicies);
-        }
-      }
-
-      // Parse stringified JSON fields that might come from frontend
-      const stringifiedFields = ['facilities', 'type', 'imageUrls', 'childEntranceFee'];
+      // Parse stringified JSON fields
+      const stringifiedFields = ['facilities', 'type', 'imageUrls', 'policies'];
       for (const field of stringifiedFields) {
         if (updateData[field] && typeof updateData[field] === 'string') {
-          try {
-            updateData[field] = JSON.parse(updateData[field]);
-          } catch (parseError) {
-            console.log(`Failed to parse ${field} as JSON, keeping as is:`, updateData[field]);
-          }
+          try { updateData[field] = JSON.parse(updateData[field]); } catch { /* keep as-is */ }
         }
       }
 
-      // Log policies after processing
-      console.log("=== POLICIES AFTER ARRAY PROCESSING ===");
-      console.log("updateData.policies:", updateData.policies);
-      console.log("updateData.policies.resortPolicies:", updateData.policies?.resortPolicies);
+      // Handle policies.resortPolicies
+      if (updateData.policies && typeof updateData.policies.resortPolicies === 'string') {
+        try { updateData.policies.resortPolicies = JSON.parse(updateData.policies.resortPolicies); } catch { updateData.policies.resortPolicies = []; }
+      }
 
-      // Convert string numbers to actual numbers
+      // Convert numbers
       if (updateData.dayRate !== undefined) updateData.dayRate = Number(updateData.dayRate);
       if (updateData.nightRate !== undefined) updateData.nightRate = Number(updateData.nightRate);
       if (updateData.starRating !== undefined) updateData.starRating = Number(updateData.starRating);
-
-      // Convert boolean strings to actual booleans
       if (updateData.hasDayRate !== undefined) updateData.hasDayRate = updateData.hasDayRate === "true" || updateData.hasDayRate === true;
       if (updateData.hasNightRate !== undefined) updateData.hasNightRate = updateData.hasNightRate === "true" || updateData.hasNightRate === true;
-
-      // Validate required fields
-      const requiredFields = ['name', 'city', 'country', 'description', 'type', 'starRating', 'facilities'];
-      for (const field of requiredFields) {
-        if (!updateData[field]) {
-          return res.status(400).json({ message: `${field} is required` });
-        }
-      }
 
       // Ensure type is always an array
       if (typeof updateData.type === "string") {
         updateData.type = [updateData.type];
       }
 
-      console.log("Final update data:", updateData);
-
-      // Use findById + save instead of findByIdAndUpdate to properly handle embedded arrays
-      const hotel = await Hotel.findById(req.params.hotelId);
-      
-      if (!hotel) {
-        return res.status(404).json({ message: "Hotel not found" });
+      // Process rooms, cottages etc. for proper number types
+      if (Array.isArray(updateData.rooms)) {
+        updateData.rooms = updateData.rooms.map((r: any) => ({
+          ...r,
+          pricePerNight: Number(r.pricePerNight) || 0,
+          minOccupancy: Number(r.minOccupancy) || 1,
+          maxOccupancy: Number(r.maxOccupancy) || 1,
+        }));
+      }
+      if (Array.isArray(updateData.cottages)) {
+        updateData.cottages = updateData.cottages.map((c: any) => ({
+          ...c,
+          pricePerNight: Number(c.pricePerNight) || 0,
+          dayRate: Number(c.dayRate) || 0,
+          nightRate: Number(c.nightRate) || 0,
+          hasDayRate: c.hasDayRate === true || c.hasDayRate === 'true',
+          hasNightRate: c.hasNightRate === true || c.hasNightRate === 'true',
+          minOccupancy: Number(c.minOccupancy) || 1,
+          maxOccupancy: Number(c.maxOccupancy) || 1,
+        }));
+      }
+      if (Array.isArray(updateData.amenities)) {
+        updateData.amenities = updateData.amenities.map((a: any) => ({
+          ...a,
+          price: Number(a.price) || 0,
+        }));
+      }
+      if (Array.isArray(updateData.packages)) {
+        updateData.packages = updateData.packages.map((p: any) => ({
+          ...p,
+          price: Number(p.price) || 0,
+        }));
       }
 
-      // Deep clone and sanitize the update data to ensure nested arrays are proper objects
-      const sanitizedData = JSON.parse(JSON.stringify(updateData));
+      // ── Build the Supabase update payload ──
+      const hotelUpdate: Record<string, any> = {
+        name: updateData.name,
+        city: updateData.city,
+        country: updateData.country,
+        description: updateData.description,
+        types: updateData.type || existingHotel.types,
+        facilities: updateData.facilities || existingHotel.facilities,
+        day_rate: updateData.dayRate ?? existingHotel.day_rate,
+        night_rate: updateData.nightRate ?? existingHotel.night_rate,
+        has_day_rate: updateData.hasDayRate ?? existingHotel.has_day_rate,
+        has_night_rate: updateData.hasNightRate ?? existingHotel.has_night_rate,
+        star_rating: updateData.starRating ?? existingHotel.star_rating,
+        image_urls: updateData.imageUrls || existingHotel.image_urls,
+        contact: updateData.contact || existingHotel.contact,
+        policies: updateData.policies || existingHotel.policies,
+        discounts: updateData.discounts || existingHotel.discounts,
+        child_entrance_fee: updateData.childEntranceFee || existingHotel.child_entrance_fee,
+        adult_entrance_fee: updateData.adultEntranceFee || existingHotel.adult_entrance_fee,
+        gcash_number: updateData.gcashNumber ?? existingHotel.gcash_number,
+        down_payment_percentage: Number(updateData.downPaymentPercentage) || existingHotel.down_payment_percentage || 50,
+        updated_at: new Date().toISOString(),
+      };
 
-      console.log("=== FINAL UPDATE DATA DEBUG ===");
-      console.log("sanitizedData.policies:", JSON.stringify(sanitizedData.policies, null, 2));
-      console.log("sanitizedData.policies.resortPolicies:", sanitizedData.policies?.resortPolicies);
+      // Update the hotel record
+      const { error: hotelUpdateError } = await supabaseAdmin
+        .from("hotels")
+        .update(hotelUpdate)
+        .eq("id", req.params.hotelId);
 
-      // Update the hotel using set to properly handle nested arrays
-      hotel.set({
-        ...sanitizedData,
-        // Ensure these are actual arrays of objects - explicitly re-assign
-        rooms: Array.isArray(sanitizedData.rooms) ? [...sanitizedData.rooms] : [],
-        cottages: Array.isArray(sanitizedData.cottages) ? [...sanitizedData.cottages] : [],
-        amenities: Array.isArray(sanitizedData.amenities) ? [...sanitizedData.amenities] : [],
-        packages: Array.isArray(sanitizedData.packages) ? [...sanitizedData.packages] : [],
-        // Also explicitly handle policies to ensure resortPolicies are saved
-        policies: {
-          ...sanitizedData.policies,
-          resortPolicies: Array.isArray(sanitizedData.policies?.resortPolicies) 
-            ? [...sanitizedData.policies.resortPolicies] 
-            : []
-        },
-        // Explicitly include gcashNumber and downPaymentPercentage
-        gcashNumber: sanitizedData.gcashNumber,
-        downPaymentPercentage: sanitizedData.downPaymentPercentage
-      });
+      if (hotelUpdateError) {
+        console.error("❌ Hotel update error:", hotelUpdateError);
+        return res.status(500).json({ message: "Failed to update hotel", error: hotelUpdateError.message });
+      }
 
-      // Debug entrance fee data before saving
-      console.log("=== ENTRANCE FEE SAVE DEBUG ===");
-      console.log("Rooms entrance fee data:");
-      sanitizedData.rooms?.forEach((room: any, index: number) => {
-        console.log(`Room ${index} (${room.name}): includedEntranceFee =`, {
-          enabled: room.includedEntranceFee?.enabled,
-          adultCount: room.includedEntranceFee?.adultCount,
-          childCount: room.includedEntranceFee?.childCount
-        });
-      });
-      console.log("Cottages entrance fee data:");
-      sanitizedData.cottages?.forEach((cottage: any, index: number) => {
-        console.log(`Cottage ${index} (${cottage.name}): includedEntranceFee =`, {
-          enabled: cottage.includedEntranceFee?.enabled,
-          adultCount: cottage.includedEntranceFee?.adultCount,
-          childCount: cottage.includedEntranceFee?.childCount
-        });
-      });
-      console.log("=== END ENTRANCE FEE SAVE DEBUG ===");
+      // ── Upsert rooms ──
+      if (Array.isArray(updateData.rooms)) {
+        // Delete existing rooms and re-insert
+        await supabaseAdmin.from("rooms").delete().eq("hotel_id", req.params.hotelId);
+        if (updateData.rooms.length > 0) {
+          const roomsToInsert = updateData.rooms.map((room: any) => ({
+            hotel_id: req.params.hotelId,
+            name: room.name,
+            type: room.type || 'Standard',
+            price_per_night: room.pricePerNight,
+            min_occupancy: room.minOccupancy,
+            max_occupancy: room.maxOccupancy,
+            description: room.description || "",
+            amenities: room.amenities || [],
+            image_url: room.imageUrl || "",
+            included_entrance_fee: room.includedEntranceFee || { enabled: false, adultCount: 0, childCount: 0 }
+          }));
+          await supabaseAdmin.from("rooms").insert(roomsToInsert);
+        }
+      }
 
-      const updatedHotel = await hotel.save();
+      // ── Upsert cottages ──
+      if (Array.isArray(updateData.cottages)) {
+        await supabaseAdmin.from("cottages").delete().eq("hotel_id", req.params.hotelId);
+        if (updateData.cottages.length > 0) {
+          const cottagesToInsert = updateData.cottages.map((c: any) => ({
+            hotel_id: req.params.hotelId,
+            name: c.name,
+            type: c.type || 'Standard',
+            price_per_night: c.pricePerNight || 0,
+            day_rate: c.dayRate || 0,
+            night_rate: c.nightRate || 0,
+            has_day_rate: c.hasDayRate || false,
+            has_night_rate: c.hasNightRate || false,
+            min_occupancy: c.minOccupancy,
+            max_occupancy: c.maxOccupancy,
+            description: c.description || "",
+            amenities: c.amenities || [],
+            image_url: c.imageUrl || "",
+            included_entrance_fee: c.includedEntranceFee || { enabled: false, adultCount: 0, childCount: 0 }
+          }));
+          await supabaseAdmin.from("cottages").insert(cottagesToInsert);
+        }
+      }
 
-      console.log("=== HOTEL SAVE DEBUG ===");
-      console.log("Saved policies.resortPolicies:", updatedHotel.policies?.resortPolicies);
-      console.log("Hotel updated successfully with rooms:", updatedHotel.rooms?.length || 0);
-      console.log("Hotel updated successfully with cottages:", updatedHotel.cottages?.length || 0);
-      console.log("Hotel updated successfully with packages:", updatedHotel.packages?.length || 0);
-      console.log("Saved gcashNumber:", updatedHotel.gcashNumber);
-      console.log("Saved downPaymentPercentage:", updatedHotel.downPaymentPercentage);
+      // ── Upsert amenities ──
+      if (Array.isArray(updateData.amenities)) {
+        await supabaseAdmin.from("amenities").delete().eq("hotel_id", req.params.hotelId);
+        if (updateData.amenities.length > 0) {
+          const amenitiesToInsert = updateData.amenities.map((a: any) => ({
+            hotel_id: req.params.hotelId,
+            name: a.name,
+            price: a.price || 0,
+            description: a.description || "",
+            image_url: a.imageUrl || ""
+          }));
+          await supabaseAdmin.from("amenities").insert(amenitiesToInsert);
+        }
+      }
 
-      res.status(200).json(updatedHotel);
+      // ── Upsert packages ──
+      if (Array.isArray(updateData.packages)) {
+        await supabaseAdmin.from("packages").delete().eq("hotel_id", req.params.hotelId);
+        if (updateData.packages.length > 0) {
+          const packagesToInsert = updateData.packages.map((p: any) => ({
+            hotel_id: req.params.hotelId,
+            name: p.name,
+            description: p.description || "",
+            price: p.price || 0,
+            image_url: p.imageUrl || "",
+            included_cottages: p.includedCottages || [],
+            included_rooms: p.includedRooms || [],
+            included_amenities: p.includedAmenities || [],
+            included_child_entrance_fee: p.includedChildEntranceFee || false
+          }));
+          await supabaseAdmin.from("packages").insert(packagesToInsert);
+        }
+      }
+
+      // Return updated hotel with related entities
+      const { data: finalHotel } = await supabaseAdmin.from("hotels").select("*").eq("id", req.params.hotelId).maybeSingle();
+      const { data: rooms } = await supabaseAdmin.from("rooms").select("*").eq("hotel_id", req.params.hotelId);
+      const { data: cottages } = await supabaseAdmin.from("cottages").select("*").eq("hotel_id", req.params.hotelId);
+      const { data: amenities } = await supabaseAdmin.from("amenities").select("*").eq("hotel_id", req.params.hotelId);
+      const { data: packages } = await supabaseAdmin.from("packages").select("*").eq("hotel_id", req.params.hotelId);
+
+      const formattedResponse = {
+        ...finalHotel,
+        _id: finalHotel?.id,
+        userId: finalHotel?.user_id,
+        type: finalHotel?.types,
+        rooms: (rooms || []).map((r: any) => ({ ...r, pricePerNight: r.price_per_night, minOccupancy: r.min_occupancy, maxOccupancy: r.max_occupancy, imageUrl: r.image_url, includedEntranceFee: r.included_entrance_fee })),
+        cottages: (cottages || []).map((c: any) => ({ ...c, pricePerNight: c.price_per_night, minOccupancy: c.min_occupancy, maxOccupancy: c.max_occupancy, imageUrl: c.image_url, includedEntranceFee: c.included_entrance_fee })),
+        amenities: (amenities || []).map((a: any) => ({ ...a, imageUrl: a.image_url })),
+        packages: (packages || []).map((p: any) => ({ ...p, imageUrl: p.image_url, includedCottages: p.included_cottages, includedRooms: p.included_rooms, includedAmenities: p.included_amenities, includedChildEntranceFee: p.included_child_entrance_fee })),
+      };
+
+      console.log("✅ Hotel updated successfully via JSON route");
+      res.status(200).json(formattedResponse);
     } catch (error: any) {
       console.error("Error updating hotel:", error);
-      
-      // Handle validation errors
-      if (error.name === 'ValidationError') {
-        const validationErrors = Object.values(error.errors).map((err: any) => ({
-          field: err.path,
-          message: err.message,
-        }));
-        return res.status(400).json({ 
-          message: "Validation failed", 
-          errors: validationErrors 
-        });
-      }
-      
       res.status(500).json({ message: "Something went wrong", error: error.message });
     }
   }
 );
-
-// Fixed TypeScript types for rooms and cottages parsing
+      
+// Fallback FormData PUT endpoint (used if frontend doesn't use the JSON endpoint)
 router.put(
   "/:hotelId",
   verifyToken,
@@ -1079,572 +1001,99 @@ router.put(
   ]),
   async (req: Request, res: Response) => {
     try {
-      console.log("=== PUT /api/my-hotels/:hotelId called ===");
-      console.log("Request body keys:", Object.keys(req.body));
-      console.log("Request body sample:", req.body);
-      console.log("=== BACKEND UPDATE DEBUG ===");
-      console.log("Request body:", req.body);
-      console.log("Hotel ID:", req.params.hotelId);
-      console.log("User ID:", req.userId);
-      const uploadedFiles = (req as any).files;
-      console.log("Uploaded files:", uploadedFiles);
-      console.log("Image files:", uploadedFiles?.imageFiles);
-      console.log("Room files:", uploadedFiles?.roomFiles);
-      console.log("Cottage files:", uploadedFiles?.cottageFiles);
-      console.log("Package files:", uploadedFiles?.packageFiles);
-      console.log("gcashNumber received in FormData PUT:", req.body.gcashNumber);
-      console.log("downPaymentPercentage received in FormData PUT:", req.body.downPaymentPercentage);
-      
-      // Debug rooms data
-      console.log("=== ROOMS DEBUG ===");
-      let debugRoomIndex = 0;
-      while (req.body[`rooms[${debugRoomIndex}][id]`]) {
-        console.log(`Room ${debugRoomIndex}:`, {
-          id: req.body[`rooms[${debugRoomIndex}][id]`],
-          name: req.body[`rooms[${debugRoomIndex}][name]`],
-          pricePerNight: req.body[`rooms[${debugRoomIndex}][pricePerNight]`]
-        });
-        debugRoomIndex++;
-      }
-      console.log(`Total rooms found: ${debugRoomIndex}`);
-      
-      // Debug cottages data
-      console.log("=== COTTAGES DEBUG ===");
-      let debugCottageIndex = 0;
-      while (req.body[`cottages[${debugCottageIndex}][id]`]) {
-        console.log(`Cottage ${debugCottageIndex}:`, {
-          id: req.body[`cottages[${debugCottageIndex}][id]`],
-          name: req.body[`cottages[${debugCottageIndex}][name]`],
-          dayRate: req.body[`cottages[${debugCottageIndex}][dayRate]`],
-          nightRate: req.body[`cottages[${debugCottageIndex}][nightRate]`]
-        });
-        debugCottageIndex++;
-      }
-      console.log(`Total cottages found: ${debugCottageIndex}`);
-      
-      // Debug packages data
-      console.log("=== PACKAGES DEBUG ===");
-      let debugPackageIndex = 0;
-      while (req.body[`packages[${debugPackageIndex}][id]`]) {
-        console.log(`Package ${debugPackageIndex}:`, {
-          id: req.body[`packages[${debugPackageIndex}][id]`],
-          name: req.body[`packages[${debugPackageIndex}][name]`],
-          price: req.body[`packages[${debugPackageIndex}][price]`],
-          imageUrl: req.body[`packages[${debugPackageIndex}][imageUrl]`]
-        });
-        debugPackageIndex++;
-      }
-      console.log(`Total packages found: ${debugPackageIndex}`);
+      console.log("=== PUT /api/my-hotels/:hotelId (FormData) called ===");
 
-      // First, find the existing hotel
-      const existingHotel = await Hotel.findOne({
-        _id: req.params.hotelId,
-        userId: req.userId,
-      });
+      // Verify the hotel exists and belongs to this user
+      const { data: existingHotel, error: findError } = await supabaseAdmin
+        .from("hotels")
+        .select("*")
+        .eq("id", req.params.hotelId)
+        .eq("user_id", req.userId)
+        .maybeSingle();
 
-      if (!existingHotel) {
+      if (findError || !existingHotel) {
         return res.status(404).json({ message: "Hotel not found" });
       }
 
-      // Prepare update data
-      const updateData: any = {
+      // Handle file uploads to Supabase Storage if present
+      const uploadedFiles = (req as any).files;
+      const uploadedImageUrls: string[] = [];
+      if (uploadedFiles?.imageFiles) {
+        for (const file of uploadedFiles.imageFiles) {
+          const fileExt = path.extname(file.originalname);
+          const fileName = `${crypto.randomUUID()}${fileExt}`;
+          const { error: uploadError } = await supabaseAdmin.storage
+            .from('hotel-images')
+            .upload(fileName, file.buffer, { contentType: file.mimetype });
+            
+          if (!uploadError) {
+            const { data: publicUrlData } = supabaseAdmin.storage
+              .from('hotel-images')
+              .getPublicUrl(fileName);
+            uploadedImageUrls.push(publicUrlData.publicUrl);
+          }
+        }
+      }
+
+      // Merge existing images with new ones
+      let existingImageUrls: string[] = [];
+      if (req.body.imageUrls) {
+        existingImageUrls = Array.isArray(req.body.imageUrls) 
+          ? req.body.imageUrls 
+          : [req.body.imageUrls];
+      }
+      const finalImageUrls = [...existingImageUrls, ...uploadedImageUrls];
+
+      const hotelUpdate: Record<string, any> = {
         name: req.body.name,
         city: req.body.city,
         country: req.body.country,
         description: req.body.description,
-        type: Array.isArray(req.body.type) ? req.body.type : [req.body.type],
-        dayRate: Number(req.body.dayRate) || 0,
-        nightRate: Number(req.body.nightRate) || 0,
-        hasDayRate: req.body.hasDayRate === "true" || req.body.hasDayRate === true,
-        hasNightRate: req.body.hasNightRate === "true" || req.body.hasNightRate === true,
-        starRating: Number(req.body.starRating),
-        facilities: Array.isArray(req.body.facilities)
-          ? req.body.facilities
-          : [req.body.facilities],
-        lastUpdated: new Date(),
+        types: Array.isArray(req.body.type) ? req.body.type : [req.body.type],
+        facilities: Array.isArray(req.body.facilities) ? req.body.facilities : [req.body.facilities],
+        day_rate: Number(req.body.dayRate) || 0,
+        night_rate: Number(req.body.nightRate) || 0,
+        has_day_rate: req.body.hasDayRate === "true" || req.body.hasDayRate === true,
+        has_night_rate: req.body.hasNightRate === "true" || req.body.hasNightRate === true,
+        star_rating: Number(req.body.starRating) || 0,
+        image_urls: finalImageUrls,
+        gcash_number: req.body.gcashNumber || "",
+        down_payment_percentage: Number(req.body.downPaymentPercentage) || 50,
+        updated_at: new Date().toISOString(),
       };
 
-      // Handle contact information
-      updateData.contact = {
-        phone: req.body["contact.phone"] || "",
-        email: req.body["contact.email"] || "",
-        website: req.body["contact.website"] || "",
-        facebook: req.body["contact.facebook"] || "",
-        instagram: req.body["contact.instagram"] || "",
-        tiktok: req.body["contact.tiktok"] || "",
-      };
-
-      // Handle policies - log what we receive
-      console.log("=== POLICIES PARSING START ===");
-      console.log("req.body policies.checkInTime:", req.body["policies.checkInTime"]);
-      console.log("req.body policies.dayCheckInTime:", req.body["policies.dayCheckInTime"]);
-      console.log("req.body policies.resortPolicies (raw):", req.body["policies.resortPolicies"]);
-      
-      updateData.policies = {
-        checkInTime: req.body["policies.checkInTime"] || "",
-        checkOutTime: req.body["policies.checkOutTime"] || "",
-        dayCheckInTime: req.body["policies.dayCheckInTime"] || "",
-        dayCheckOutTime: req.body["policies.dayCheckOutTime"] || "",
-        nightCheckInTime: req.body["policies.nightCheckInTime"] || "",
-        nightCheckOutTime: req.body["policies.nightCheckOutTime"] || "",
-        resortPolicies: [],
-      };
-
-      // Parse resort policies from FormData
-      const resortPolicies: Array<{
-        id: string;
-        title: string;
-        description: string;
-        isConfirmed?: boolean;
-      }> = [];
-      let policyIndex = 0;
-      
-      console.log("=== RESORT POLICIES DEBUG ===");
-      console.log("All req.body keys containing 'policies':", Object.keys(req.body).filter(k => k.includes('policies')));
-      console.log("Checking for resort policies in FormData...");
-      
-      // First, let's try to find any keys that might contain resort policy data
-      const allKeys = Object.keys(req.body);
-      const policyKeys = allKeys.filter(k => k.includes('resortPolicies'));
-      console.log("Keys containing 'resortPolicies':", policyKeys);
-      
-      // Also try to find keys that start with just '[' - for array format
-      const arrayFormatKeys = allKeys.filter(k => k.startsWith('[') || k.match(/^\d+\./));
-      console.log("Keys in array format:", arrayFormatKeys);
-      
-      // Try multiple key formats that might be used
-      while (req.body[`policies.resortPolicies[${policyIndex}][id]`] || 
-             req.body[`policies.resortPolicies.${policyIndex}.id`] ||
-             req.body[`resortPolicies[${policyIndex}][id]`] ||
-             req.body[`resortPolicies.${policyIndex}.id`]) {
-        
-        const policyId = req.body[`policies.resortPolicies[${policyIndex}][id]`] || 
-                        req.body[`policies.resortPolicies.${policyIndex}.id`] ||
-                        req.body[`resortPolicies[${policyIndex}][id]`];
-        
-        if (!policyId) break;
-        
-        const policy = {
-          id: policyId,
-          title: req.body[`policies.resortPolicies[${policyIndex}][title]`] || 
-                 req.body[`policies.resortPolicies.${policyIndex}.title`] ||
-                 req.body[`resortPolicies[${policyIndex}][title]`] || "",
-          description: req.body[`policies.resortPolicies[${policyIndex}][description]`] || 
-                      req.body[`policies.resortPolicies.${policyIndex}.description`] ||
-                      req.body[`resortPolicies[${policyIndex}][description]`] || "",
-          isConfirmed: req.body[`policies.resortPolicies[${policyIndex}][isConfirmed]`] === "true" || 
-                       req.body[`policies.resortPolicies[${policyIndex}][isConfirmed]`] === true ||
-                       req.body[`policies.resortPolicies.${policyIndex}.isConfirmed`] === "true" ||
-                       req.body[`policies.resortPolicies.${policyIndex}.isConfirmed`] === true,
-        };
-        
-        console.log(`Found policy ${policyIndex}:`, policy);
-        resortPolicies.push(policy);
-        policyIndex++;
-      }
-      
-      console.log(`Total resort policies found: ${resortPolicies.length}`);
-      
-      if (resortPolicies.length > 0) {
-        updateData.policies.resortPolicies = resortPolicies;
-        console.log("Resort policies added to updateData:", updateData.policies.resortPolicies);
-      } else {
-        console.log("No resort policies found in FormData - will try JSON parsing");
-        
-        // Try parsing resortPolicies from a JSON string field as fallback
-        const policiesJson = req.body["policies.resortPolicies"];
-        console.log("Found policies.resortPolicies in body:", policiesJson);
-        if (policiesJson) {
-          try {
-            const parsed = typeof policiesJson === 'string' ? JSON.parse(policiesJson) : policiesJson;
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              console.log("Found resortPolicies as JSON string:", parsed);
-              updateData.policies.resortPolicies = parsed;
-              console.log("Resort policies added to updateData from JSON string:", updateData.policies.resortPolicies);
-            } else {
-              console.log("Parsed policies is not an array or is empty:", parsed);
-            }
-          } catch (e) {
-            console.log("Failed to parse policies.resortPolicies JSON:", e);
-          }
-        } else {
-          console.log("No policies.resortPolicies field found in req.body");
-          // Log all keys to help debug
-          console.log("All req.body keys:", Object.keys(req.body));
-        }
+      // Handle policies if passed as string
+      if (req.body.policies) {
+        try {
+          hotelUpdate.policies = typeof req.body.policies === 'string' 
+            ? JSON.parse(req.body.policies) 
+            : req.body.policies;
+        } catch { }
       }
 
-      // Parse amenities from FormData
-      const amenities: Array<{
-        id: string;
-        name: string;
-        price: number;
-        description?: string;
-      }> = [];
-      let amenityIndex = 0;
-      while (req.body[`amenities[${amenityIndex}][id]`]) {
-        amenities.push({
-          id: req.body[`amenities[${amenityIndex}][id]`],
-          name: req.body[`amenities[${amenityIndex}][name]`],
-          price: parseFloat(req.body[`amenities[${amenityIndex}][price]`]) || 0,
-          description: req.body[`amenities[${amenityIndex}][description]`] || "",
-        });
-        amenityIndex++;
-      }
-      if (amenities.length > 0) {
-        updateData.amenities = amenities;
+      const { error: hotelUpdateError } = await supabaseAdmin
+        .from("hotels")
+        .update(hotelUpdate)
+        .eq("id", req.params.hotelId);
+
+      if (hotelUpdateError) {
+        return res.status(500).json({ message: "Failed to update hotel" });
       }
 
-      // Handle discounts from FormData
-      updateData.discounts = {
-        seniorCitizenEnabled: req.body["discounts.seniorCitizenEnabled"] === "true" || req.body["discounts.seniorCitizenEnabled"] === true,
-        seniorCitizenPercentage: parseFloat(req.body["discounts.seniorCitizenPercentage"]) || 20,
-        pwdEnabled: req.body["discounts.pwdEnabled"] === "true" || req.body["discounts.pwdEnabled"] === true,
-        pwdPercentage: parseFloat(req.body["discounts.pwdPercentage"]) || 20,
-        customDiscounts: []
-      };
+      // We skip nested arrays (rooms/cottages/etc) for FormData PUT as the frontend now prefers JSON
+      // If needed, the logic from POST / can be duplicated here, but the frontend primarily uses JSON for edits.
 
-      // Parse custom discounts from FormData
-      const customDiscounts: Array<{
-        id: string;
-        name: string;
-        percentage: number;
-        promoCode: string;
-        isEnabled: boolean;
-        maxUses?: number;
-        validUntil?: string;
-      }> = [];
-      let discountIndex = 0;
-      while (req.body[`discounts.customDiscounts[${discountIndex}][id]`]) {
-        const maxUsesVal = req.body[`discounts.customDiscounts[${discountIndex}][maxUses]`];
-        const validUntilVal = req.body[`discounts.customDiscounts[${discountIndex}][validUntil]`];
-        customDiscounts.push({
-          id: req.body[`discounts.customDiscounts[${discountIndex}][id]`],
-          name: req.body[`discounts.customDiscounts[${discountIndex}][name]`],
-          percentage: parseFloat(req.body[`discounts.customDiscounts[${discountIndex}][percentage]`]) || 0,
-          promoCode: req.body[`discounts.customDiscounts[${discountIndex}][promoCode]`],
-          isEnabled: req.body[`discounts.customDiscounts[${discountIndex}][isEnabled]`] === "true" || req.body[`discounts.customDiscounts[${discountIndex}][isEnabled]`] === true,
-          maxUses: maxUsesVal ? parseInt(maxUsesVal) : undefined,
-          validUntil: validUntilVal || undefined,
-        });
-        discountIndex++;
-      }
-      if (customDiscounts.length > 0) {
-        updateData.discounts!.customDiscounts = customDiscounts;
-      }
+      // Return updated hotel
+      const { data: updatedHotel } = await supabaseAdmin
+        .from("hotels")
+        .select("*")
+        .eq("id", req.params.hotelId)
+        .maybeSingle();
 
-      // Parse packages from FormData
-      const packages: Array<{
-        id: string;
-        name: string;
-        description: string;
-        price: number;
-        includedCottages: string[];
-        includedRooms: string[];
-        includedAmenities: string[];
-        imageUrl: string;
-      }> = [];
-      let createPackageIndex = 0;
-      while (req.body[`packages[${createPackageIndex}][id]`]) {
-        const includedCottages: string[] = [];
-        const includedRooms: string[] = [];
-        const includedAmenities: string[] = [];
-        
-        // Parse included cottages
-        let packageCottageIndex = 0;
-        while (req.body[`packages[${createPackageIndex}][includedCottages][${packageCottageIndex}]`]) {
-          includedCottages.push(req.body[`packages[${createPackageIndex}][includedCottages][${packageCottageIndex}]`]);
-          packageCottageIndex++;
-        }
-        
-        // Parse included rooms
-        let packageRoomIndex = 0;
-        while (req.body[`packages[${createPackageIndex}][includedRooms][${packageRoomIndex}]`]) {
-          includedRooms.push(req.body[`packages[${createPackageIndex}][includedRooms][${packageRoomIndex}]`]);
-          packageRoomIndex++;
-        }
-        
-        // Parse included amenities
-        let amenityIndex = 0;
-        while (req.body[`packages[${createPackageIndex}][includedAmenities][${amenityIndex}]`]) {
-          includedAmenities.push(req.body[`packages[${createPackageIndex}][includedAmenities][${amenityIndex}]`]);
-          amenityIndex++;
-        }
-        
-        packages.push({
-          id: req.body[`packages[${createPackageIndex}][id]`],
-          name: req.body[`packages[${createPackageIndex}][name]`],
-          description: req.body[`packages[${createPackageIndex}][description]`],
-          price: parseFloat(req.body[`packages[${createPackageIndex}][price]`]) || 0,
-          includedCottages,
-          includedRooms,
-          includedAmenities,
-          imageUrl: req.body[`packages[${createPackageIndex}][imageUrl]`] || "",
-        });
-        createPackageIndex++;
-      }
-      if (packages.length > 0) {
-        updateData.packages = packages;
-      }
-
-      // Parse rooms from FormData
-      const rooms: Array<{
-        id: string;
-        name: string;
-        type: string;
-        pricePerNight: number;
-        minOccupancy: number;
-        maxOccupancy: number;
-        description?: string;
-        amenities?: string[];
-        imageUrl: string;
-      }> = [];
-      let createRoomIndex = 0;
-      while (req.body[`rooms[${createRoomIndex}][id]`]) {
-        const roomAmenities: string[] = [];
-        let roomAmenityIndex = 0;
-        while (req.body[`rooms[${createRoomIndex}][amenities][${roomAmenityIndex}]`]) {
-          roomAmenities.push(req.body[`rooms[${createRoomIndex}][amenities][${roomAmenityIndex}]`]);
-          roomAmenityIndex++;
-        }
-        
-        rooms.push({
-          id: req.body[`rooms[${createRoomIndex}][id]`],
-          name: req.body[`rooms[${createRoomIndex}][name]`],
-          type: req.body[`rooms[${createRoomIndex}][type]`],
-          pricePerNight: parseFloat(req.body[`rooms[${createRoomIndex}][pricePerNight]`]) || 0,
-          minOccupancy: parseInt(req.body[`rooms[${createRoomIndex}][minOccupancy]`]) || 1,
-          maxOccupancy: parseInt(req.body[`rooms[${createRoomIndex}][maxOccupancy]`]) || 1,
-          description: req.body[`rooms[${createRoomIndex}][description]`] || "",
-          amenities: roomAmenities,
-          imageUrl: req.body[`rooms[${createRoomIndex}][imageUrl]`] || "",
-        });
-        createRoomIndex++;
-      }
-      if (rooms.length > 0) {
-        updateData.rooms = rooms;
-      }
-
-      // Parse cottages from FormData
-      const cottages: Array<{
-        id: string;
-        name: string;
-        type: string;
-        pricePerNight: number;
-        dayRate: number;
-        nightRate: number;
-        hasDayRate: boolean;
-        hasNightRate: boolean;
-        minOccupancy: number;
-        maxOccupancy: number;
-        description?: string;
-        amenities?: string[];
-        imageUrl: string;
-      }> = [];
-      let updateCottageIndex = 0;
-      while (req.body[`cottages[${updateCottageIndex}][id]`]) {
-        const cottageAmenities: string[] = [];
-        let cottageAmenityIndex = 0;
-        while (req.body[`cottages[${updateCottageIndex}][amenities][${cottageAmenityIndex}]`]) {
-          cottageAmenities.push(req.body[`cottages[${updateCottageIndex}][amenities][${cottageAmenityIndex}]`]);
-          cottageAmenityIndex++;
-        }
-        
-        cottages.push({
-          id: req.body[`cottages[${updateCottageIndex}][id]`],
-          name: req.body[`cottages[${updateCottageIndex}][name]`],
-          type: req.body[`cottages[${updateCottageIndex}][type]`],
-          pricePerNight: parseFloat(req.body[`cottages[${updateCottageIndex}][pricePerNight]`]) || 0,
-          dayRate: parseFloat(req.body[`cottages[${updateCottageIndex}][dayRate]`]) || 0,
-          nightRate: parseFloat(req.body[`cottages[${updateCottageIndex}][nightRate]`]) || 0,
-          hasDayRate: req.body[`cottages[${updateCottageIndex}][hasDayRate]`] === "true" || req.body[`cottages[${updateCottageIndex}][hasDayRate]`] === true,
-          hasNightRate: req.body[`cottages[${updateCottageIndex}][hasNightRate]`] === "true" || req.body[`cottages[${updateCottageIndex}][hasNightRate]`] === true,
-          minOccupancy: parseInt(req.body[`cottages[${updateCottageIndex}][minOccupancy]`]) || 1,
-          maxOccupancy: parseInt(req.body[`cottages[${updateCottageIndex}][maxOccupancy]`]) || 1,
-          description: req.body[`cottages[${updateCottageIndex}][description]`] || "",
-          amenities: cottageAmenities,
-          imageUrl: req.body[`cottages[${updateCottageIndex}][imageUrl]`] || "",
-        });
-        updateCottageIndex++;
-      }
-      if (cottages.length > 0) {
-        updateData.cottages = cottages;
-      }
-
-      // Update the hotel
-      // Handle image uploads if any
-      const uploadedFilesUpdate = (req as any).files;
-      const imageFiles = uploadedFilesUpdate?.imageFiles as any[] || [];
-      const roomFiles = uploadedFilesUpdate?.roomFiles as any[] || [];
-      const cottageFiles = uploadedFilesUpdate?.cottageFiles as any[] || [];
-      const packageFiles = uploadedFilesUpdate?.packageFiles as any[] || [];
-      
-      let finalImageUrls: string[] = [];
-      
-      // Handle main hotel image uploads
-      if (imageFiles && imageFiles.length > 0) {
-        // Upload new images using the new image service
-        const newImageUrls = await imageService.saveImages(imageFiles);
-        
-        // Get existing image URLs from request body
-        const existingImageUrls = req.body.imageUrls
-          ? Array.isArray(req.body.imageUrls)
-            ? req.body.imageUrls
-            : [req.body.imageUrls]
-          : [];
-        
-        // Combine existing and new images
-        finalImageUrls = [...existingImageUrls, ...newImageUrls];
-        
-        // Update the hotel with all image URLs
-        updateData.imageUrls = finalImageUrls;
-      } else if (req.body.imageUrls && (Array.isArray(req.body.imageUrls) ? req.body.imageUrls.length > 0 : req.body.imageUrls)) {
-        // No new files, but imageUrls provided in request - update with provided URLs
-        finalImageUrls = Array.isArray(req.body.imageUrls)
-          ? req.body.imageUrls
-          : [req.body.imageUrls];
-        
-        // Update the hotel with all image URLs
-        updateData.imageUrls = finalImageUrls;
-      }
-      // If no files and no imageUrls provided, don't update imageUrls field (keep existing)
-      
-      // Handle accommodation image uploads
-      console.log("=== ACCOMMODATION IMAGE UPLOAD DEBUG ===");
-      console.log("Room files:", roomFiles);
-      console.log("Cottage files:", cottageFiles);
-      console.log("Package files:", packageFiles);
-      
-      // Process room image files
-      if (roomFiles && roomFiles.length > 0) {
-        console.log("Processing room image files...");
-        const roomImageUrls = await imageService.saveImages(roomFiles);
-        console.log("Room image URLs:", roomImageUrls);
-        
-        // Update rooms with new image URLs based on their index
-        const updatedRooms = rooms.map((room, index) => {
-          const roomFileKey = `roomFiles[${index}]`;
-          const roomFileIndex = roomFiles.findIndex((file: any) => file.fieldname === roomFileKey);
-          if (roomFileIndex !== -1 && roomImageUrls[roomFileIndex]) {
-            return { ...room, imageUrl: roomImageUrls[roomFileIndex] };
-          }
-          // Check if imageUrl is explicitly set to empty string in form data
-          const formImageUrl = req.body[`rooms[${index}][imageUrl]`];
-          if (formImageUrl === "" || formImageUrl === null) {
-            return { ...room, imageUrl: "" };
-          }
-          return room;
-        });
-        updateData.rooms = updatedRooms;
-      } else {
-        // No new room files, but check if imageUrl was cleared in form data
-        const updatedRooms = rooms.map((room, index) => {
-          const formImageUrl = req.body[`rooms[${index}][imageUrl]`];
-          if (formImageUrl === "" || formImageUrl === null) {
-            return { ...room, imageUrl: "" };
-          }
-          return room;
-        });
-        updateData.rooms = updatedRooms;
-      }
-      
-      // Process cottage image files
-      if (cottageFiles && cottageFiles.length > 0) {
-        console.log("Processing cottage image files...");
-        const cottageImageUrls = await imageService.saveImages(cottageFiles);
-        console.log("Cottage image URLs:", cottageImageUrls);
-        
-        // Update cottages with new image URLs based on their index
-        const updatedCottages = cottages.map((cottage, index) => {
-          const cottageFileKey = `cottageFiles[${index}]`;
-          const cottageFileIndex = cottageFiles.findIndex((file: any) => file.fieldname === cottageFileKey);
-          if (cottageFileIndex !== -1 && cottageImageUrls[cottageFileIndex]) {
-            return { ...cottage, imageUrl: cottageImageUrls[cottageFileIndex] };
-          }
-          // Check if imageUrl is explicitly set to empty string in form data
-          const formImageUrl = req.body[`cottages[${index}][imageUrl]`];
-          if (formImageUrl === "" || formImageUrl === null) {
-            return { ...cottage, imageUrl: "" };
-          }
-          return cottage;
-        });
-        updateData.cottages = updatedCottages;
-      } else {
-        // No new cottage files, but check if imageUrl was cleared in form data
-        const updatedCottages = cottages.map((cottage, index) => {
-          const formImageUrl = req.body[`cottages[${index}][imageUrl]`];
-          if (formImageUrl === "" || formImageUrl === null) {
-            return { ...cottage, imageUrl: "" };
-          }
-          return cottage;
-        });
-        updateData.cottages = updatedCottages;
-      }
-      
-      // Process package image files
-      if (packageFiles && packageFiles.length > 0) {
-        console.log("Processing package image files...");
-        const packageImageUrls = await imageService.saveImages(packageFiles);
-        console.log("Package image URLs:", packageImageUrls);
-        
-        // Update packages with new image URLs based on their index
-        const updatedPackages = packages.map((pkg, index) => {
-          const packageFileKey = `packageFiles[${index}]`;
-          const packageFileIndex = packageFiles.findIndex((file: any) => file.fieldname === packageFileKey);
-          if (packageFileIndex !== -1 && packageImageUrls[packageFileIndex]) {
-            return { ...pkg, imageUrl: packageImageUrls[packageFileIndex] };
-          }
-          // Check if imageUrl is explicitly set to empty string in form data
-          const formImageUrl = req.body[`packages[${index}][imageUrl]`];
-          if (formImageUrl === "" || formImageUrl === null) {
-            return { ...pkg, imageUrl: "" };
-          }
-          return pkg;
-        });
-        updateData.packages = updatedPackages;
-      } else {
-        // No new package files, but check if imageUrl was cleared in form data
-        const updatedPackages = packages.map((pkg, index) => {
-          const formImageUrl = req.body[`packages[${index}][imageUrl]`];
-          if (formImageUrl === "" || formImageUrl === null) {
-            return { ...pkg, imageUrl: "" };
-          }
-          return pkg;
-        });
-        updateData.packages = updatedPackages;
-      }
-      
-      // Debug: Log the full updateData before updating
-      console.log("=== FINAL UPDATE DATA ===");
-      console.log("updateData.policies:", JSON.stringify(updateData.policies, null, 2));
-      
-      // Add payment fields to updateData
-      updateData.gcashNumber = req.body.gcashNumber || "";
-      updateData.downPaymentPercentage = Number(req.body.downPaymentPercentage) || 50;
-      
-      console.log("gcashNumber in FormData PUT:", updateData.gcashNumber);
-      console.log("downPaymentPercentage in FormData PUT:", updateData.downPaymentPercentage);
-      
-      const updatedHotel = await Hotel.findByIdAndUpdate(
-        req.params.hotelId,
-        updateData,
-        { new: true }
-      );
-
-      if (!updatedHotel) {
-        return res.status(404).json({ message: "Hotel not found" });
-      }
-
-      res.status(200).json(updatedHotel);
-    } catch (error) {
+      res.status(200).json({ ...updatedHotel, _id: updatedHotel?.id });
+    } catch (error: any) {
       console.error("Error updating hotel:", error);
-      console.error("Request body:", req.body);
-      console.error("Hotel ID:", req.params.hotelId);
-      console.error("User ID:", req.userId);
-      res.status(500).json({
-        message: "Something went wrong",
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
+      res.status(500).json({ message: "Something went wrong", error: error.message });
     }
   }
 );
@@ -1656,39 +1105,47 @@ router.delete(
     try {
       const hotelId = req.params.hotelId;
 
-      // First check if the hotel exists and belongs to the user
-      const hotel = await Hotel.findOne({
-        _id: hotelId,
-        userId: req.userId,
-      });
+      // Check if the hotel exists and belongs to the user
+      const { data: hotel, error: findError } = await supabaseAdmin
+        .from("hotels")
+        .select("id")
+        .eq("id", hotelId)
+        .eq("user_id", req.userId)
+        .maybeSingle();
 
-      if (!hotel) {
+      if (findError || !hotel) {
         return res.status(404).json({ message: "Hotel not found" });
       }
 
       // Check if there are any active bookings for this hotel
-      const activeBookings = await Booking.countDocuments({
-        hotelId: hotelId,
-        status: { $in: ["pending", "confirmed"] },
-      });
+      const { count: activeBookings } = await supabaseAdmin
+        .from("bookings")
+        .select("*", { count: "exact", head: true })
+        .eq("hotel_id", hotelId)
+        .in("status", ["pending", "confirmed"]);
 
-      if (activeBookings > 0) {
+      if (activeBookings && activeBookings > 0) {
         return res.status(400).json({ 
           message: "Cannot delete resort with active bookings. Please cancel all bookings first." 
         });
       }
 
-      // Delete the hotel
-      await Hotel.findByIdAndDelete(hotelId);
+      // Delete the hotel (cascade should handle related entities)
+      const { error: deleteError } = await supabaseAdmin
+        .from("hotels")
+        .delete()
+        .eq("id", hotelId);
 
-      res.status(200).json({ 
-        message: "Resort deleted successfully" 
-      });
-    } catch (error) {
+      if (deleteError) {
+        return res.status(500).json({ message: "Failed to delete resort", error: deleteError.message });
+      }
+
+      res.status(200).json({ message: "Resort deleted successfully" });
+    } catch (error: any) {
       console.error("Error deleting hotel:", error);
       res.status(500).json({ 
         message: "Something went wrong",
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: error.message,
       });
     }
   }

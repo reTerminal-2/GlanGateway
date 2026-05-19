@@ -3,7 +3,7 @@
  * Provides comprehensive deployment readiness checks and validation
  */
 
-import mongoose from 'mongoose';
+// No legacy DB imports
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
@@ -33,7 +33,8 @@ export interface DeploymentReport {
 
 export class DeploymentVerifier {
   private static readonly REQUIRED_ENV_VARS = [
-    'MONGODB_CONNECTION_STRING',
+    'SUPABASE_URL',
+    'SUPABASE_ANON_KEY',
     'JWT_SECRET_KEY',
     'STRIPE_PUBLISHABLE_KEY',
     'STRIPE_SECRET_KEY',
@@ -42,9 +43,7 @@ export class DeploymentVerifier {
   ];
 
   private static readonly OPTIONAL_ENV_VARS = [
-    'CLOUDINARY_CLOUD_NAME',
-    'CLOUDINARY_API_KEY',
-    'CLOUDINARY_API_SECRET',
+    'SUPABASE_SERVICE_ROLE_KEY',
     'NODE_ENV',
     'PORT',
     'ACCESS_TOKEN_EXPIRY',
@@ -55,7 +54,6 @@ export class DeploymentVerifier {
 
   private static readonly REQUIRED_NPM_PACKAGES = [
     'express',
-    'mongoose',
     'jsonwebtoken',
     'bcryptjs',
     'stripe',
@@ -309,27 +307,24 @@ export class DeploymentVerifier {
    */
   public static async checkDatabaseConnection(): Promise<DeploymentCheck> {
     try {
-      const readyState = mongoose.connection.readyState;
-      const isConnected = readyState === 1;
+      const { supabaseAdmin } = require('../core/supabase');
+      const { error } = await supabaseAdmin.from('users').select('id').limit(1);
       
-      if (!isConnected) {
+      if (error) {
         return {
           name: 'Database Connection',
           status: 'FAIL',
           message: 'Database is not connected',
-          details: { readyState, status: this.getDatabaseStateDescription(readyState) },
+          details: { error: error.message },
           critical: true
         };
       }
 
-      // Test database operation
-      await mongoose.connection.db?.admin().ping();
-      
       return {
         name: 'Database Connection',
         status: 'PASS',
         message: 'Database is connected and responsive',
-        details: { readyState, database: mongoose.connection.name },
+        details: { database: 'Supabase' },
         critical: false
       };
     } catch (error) {
@@ -347,44 +342,13 @@ export class DeploymentVerifier {
    * Check database indexes
    */
   public static async checkDatabaseIndexes(): Promise<DeploymentCheck> {
-    try {
-      if (mongoose.connection.readyState !== 1) {
-        return {
-          name: 'Database Indexes',
-          status: 'FAIL',
-          message: 'Database not connected for index check',
-          details: {},
-          critical: true
-        };
-      }
-
-      const collections = await mongoose.connection.db?.listCollections().toArray();
-      const indexInfo: any[] = [];
-      
-      for (const collection of collections || []) {
-        const indexes = await mongoose.connection.db?.collection(collection.name).listIndexes().toArray();
-        indexInfo.push({
-          collection: collection.name,
-          indexCount: indexes?.length || 0
-        });
-      }
-
-      return {
-        name: 'Database Indexes',
-        status: 'PASS',
-        message: `Database indexes checked for ${collections?.length || 0} collections`,
-        details: { collections: collections?.length || 0, indexInfo },
-        critical: false
-      };
-    } catch (error) {
-      return {
-        name: 'Database Indexes',
-        status: 'WARN',
-        message: 'Failed to check database indexes',
-        details: { error: error instanceof Error ? error.message : 'Unknown error' },
-        critical: false
-      };
-    }
+    return {
+      name: 'Database Indexes',
+      status: 'PASS',
+      message: 'Database indexes are managed by Supabase',
+      details: {},
+      critical: false
+    };
   }
 
   /**

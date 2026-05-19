@@ -397,43 +397,47 @@ export const createRoomBooking = async (formData: BookingFormData) => {
 };
 
 export const createGCashBooking = async (formData: any) => {
-  const formDataToSubmit = new FormData();
-  
-  // Add all booking fields
-  Object.keys(formData).forEach(key => {
-    if (key === 'gcashPayment') {
-      // Handle GCash payment object separately
-      const gcashPayment = formData[key];
-      Object.keys(gcashPayment).forEach(gcashKey => {
-        if (gcashKey === 'paymentTime') {
-          formDataToSubmit.append(`gcashPayment.${gcashKey}`, new Date(gcashPayment[gcashKey]).toISOString());
-        } else {
-          formDataToSubmit.append(`gcashPayment.${gcashKey}`, gcashPayment[gcashKey]);
-        }
-      });
-    } else if (key === 'screenshotFile') {
-      // Add the screenshot file directly - this is the key fix
-      if (formData[key] instanceof File) {
-        formDataToSubmit.append('gcashPayment.screenshotFile', formData[key]);
-      }
-    } else if (key === 'paymentTime') {
-      formDataToSubmit.append(key, new Date(formData[key]).toISOString());
-    } else {
-      formDataToSubmit.append(key, formData[key]);
-    }
-  });
+  // Send as JSON instead of FormData since we're not actually uploading files to disk
+  // The backend will store the GCash payment details in the database
+  const payload = {
+    firstName: formData.firstName,
+    lastName: formData.lastName,
+    email: formData.email,
+    phone: formData.phone,
+    adultCount: formData.adultCount,
+    childCount: formData.childCount,
+    checkIn: formData.checkIn,
+    checkOut: formData.checkOut,
+    checkInTime: formData.checkInTime || "12:00 PM",
+    checkOutTime: formData.checkOutTime || "11:00 AM",
+    totalCost: formData.totalCost,
+    basePrice: formData.basePrice,
+    specialRequests: formData.specialRequests || "",
+    paymentMethod: "gcash",
+    selectedItems: formData.selectedItems || [],
+    selectedRooms: (formData.selectedItems || []).filter((i: any) => i.type === 'room'),
+    selectedCottages: (formData.selectedItems || []).filter((i: any) => i.type === 'cottage'),
+    selectedAmenities: (formData.selectedItems || []).filter((i: any) => i.type === 'amenity'),
+    isPwdBooking: formData.isPwdBooking || false,
+    isSeniorCitizenBooking: formData.isSeniorCitizenBooking || false,
+    gcashPayment: {
+      gcashNumber: formData.gcashPayment?.gcashNumber || "",
+      referenceNumber: formData.gcashPayment?.referenceNumber || "",
+      amountPaid: formData.gcashPayment?.amountPaid || formData.totalCost,
+      paymentTime: formData.gcashPayment?.paymentTime
+        ? new Date(formData.gcashPayment.paymentTime).toISOString()
+        : new Date().toISOString(),
+      status: "pending",
+    },
+  };
 
   const response = await axiosInstance.post(
     `/api/hotels/${formData.hotelId}/bookings/gcash`,
-    formDataToSubmit,
-    {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    }
+    payload
   );
   return response.data;
 };
+
 
 export const fetchMyBookings = async (): Promise<HotelWithBookingsType[]> => {
   const response = await axiosInstance.get("/api/my-bookings");
