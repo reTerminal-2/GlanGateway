@@ -134,8 +134,8 @@ export class ComplianceManager {
   static getClientIP(req: Request): string {
     return (
       req.ip ||
-      req.connection.remoteAddress ||
-      req.socket.remoteAddress ||
+      req.socket?.remoteAddress ||
+      req.connection?.remoteAddress ||
       (req.connection as any)?.socket?.remoteAddress ||
       'unknown'
     );
