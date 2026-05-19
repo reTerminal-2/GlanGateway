@@ -51,11 +51,7 @@ export const configureCloudinary = () => {
 };
 
 export const createUploadsDirectory = () => {
-  const uploadsDir = path.join(__dirname, '..', '..', 'uploads');
-  if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
-    console.log("📁 Created local uploads directory for temp staging");
-  }
+  console.log("☁️  Local uploads directory creation disabled. Utilizing Supabase Storage buckets.");
 };
 
 // Supabase Connection with Validation
