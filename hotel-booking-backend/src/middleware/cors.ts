@@ -34,12 +34,9 @@ const allowedOrigins = parseAllowedOrigins();
 
 // Secure CORS origin validation
 const corsOriginValidator = (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-  // Allow requests with no origin ONLY in development
+  // Allow requests with no origin (direct browser visits, curl, same-origin, etc.)
   if (!origin) {
-    if (process.env.NODE_ENV !== "production") {
-      return callback(null, true);
-    }
-    return callback(new Error("Origin header required"), false);
+    return callback(null, true);
   }
 
   // Normalize origin by removing trailing slash
