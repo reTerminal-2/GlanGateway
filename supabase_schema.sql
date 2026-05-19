@@ -270,9 +270,14 @@ CREATE TABLE IF NOT EXISTS public.billing_invoices (
 CREATE TABLE IF NOT EXISTS public.role_promotion_requests (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id TEXT NOT NULL,
-  requested_role TEXT NOT NULL,
-  status TEXT DEFAULT 'pending',
-  notes TEXT,
+  documents JSONB NOT NULL DEFAULT '{}'::jsonb,
+  status TEXT DEFAULT 'pending', -- 'pending', 'under_review', 'approved', 'declined'
+  requested_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
+  reviewed_at TIMESTAMP WITH TIME ZONE,
+  reviewed_by TEXT,
+  rejection_reason TEXT,
+  admin_notes TEXT,
+  review_status JSONB DEFAULT '{"dtiPermit": false, "municipalEngineeringCert": false, "municipalHealthCert": false, "menroCert": false, "bfpPermit": false, "businessPermit": false, "nationalId": false}'::jsonb,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
 

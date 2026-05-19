@@ -23,7 +23,7 @@ class ImageService {
     
     for (const file of files) {
       const ext = path.extname(file.originalname).toLowerCase();
-      const allowedExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+      const allowedExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf'];
       
       if (!allowedExts.includes(ext)) {
         console.warn('⚠️ Invalid file extension:', ext);
