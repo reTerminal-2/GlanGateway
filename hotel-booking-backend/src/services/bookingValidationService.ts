@@ -5,9 +5,13 @@
  * the 8-hour modification window enforcement.
  */
 
-import { IBooking } from '../domains/booking/models/booking';
-
-type BookingDocument = IBooking;
+// Inline booking type (previously from deleted Mongoose model)
+interface BookingDocument {
+  status: string;
+  changeWindowDeadline?: Date;
+  canModify?: boolean;
+  [key: string]: any;
+}
 
 export interface ModificationCheckResult {
   canModify: boolean;

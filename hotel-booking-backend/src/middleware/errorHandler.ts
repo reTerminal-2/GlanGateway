@@ -73,12 +73,6 @@ export const errorHandler = (
     errorCode = err.code;
     message = err.message;
   } 
-  // Handle Mongoose validation errors
-  else if (err.name === 'ValidationError') {
-    statusCode = 400;
-    errorCode = 'VALIDATION_ERROR';
-    message = err.message;
-  }
   // Handle JWT errors
   else if (err.name === 'JsonWebTokenError') {
     statusCode = 401;
@@ -90,17 +84,23 @@ export const errorHandler = (
     errorCode = 'TOKEN_EXPIRED';
     message = 'Authentication token has expired';
   }
-  // Handle MongoDB duplicate key errors
-  else if ((err as any).code === 11000) {
+  // Handle Supabase/PostgreSQL duplicate key errors (23505)
+  else if ((err as any).code === '23505') {
     statusCode = 409;
     errorCode = 'DUPLICATE_ENTRY';
     message = 'Duplicate resource entry';
   }
-  // Handle Cast errors (invalid ObjectId)
-  else if (err.name === 'CastError') {
+  // Handle Supabase/PostgreSQL invalid UUID / cast errors (22P02)
+  else if ((err as any).code === '22P02') {
     statusCode = 400;
     errorCode = 'INVALID_ID';
-    message = 'Invalid resource identifier';
+    message = 'Invalid resource identifier format';
+  }
+  // Handle Supabase/PostgreSQL foreign key violation (23503)
+  else if ((err as any).code === '23503') {
+    statusCode = 400;
+    errorCode = 'FOREIGN_KEY_VIOLATION';
+    message = 'Referenced resource does not exist';
   }
   // Handle Syntax errors (invalid JSON)
   else if (err instanceof SyntaxError && 'body' in err) {
