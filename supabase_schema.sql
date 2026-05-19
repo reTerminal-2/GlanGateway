@@ -189,3 +189,31 @@ CREATE TABLE IF NOT EXISTS public.room_blocks (
   reason TEXT NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
+
+-- ==========================================
+-- 10. VERIFICATIONS & COMPLIANCE TABLES
+-- ==========================================
+CREATE TABLE IF NOT EXISTS public.identity_verifications (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  document_url TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+CREATE TABLE IF NOT EXISTS public.compliance_reports (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  hotel_id UUID REFERENCES public.hotels(id) ON DELETE CASCADE,
+  status TEXT DEFAULT 'compliant',
+  issues TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+CREATE TABLE IF NOT EXISTS public.verification_documents (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id TEXT NOT NULL,
+  document_type TEXT NOT NULL,
+  document_url TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
