@@ -251,3 +251,42 @@ CREATE TABLE IF NOT EXISTS public.housekeeping_maintenance (
   resolved_by UUID REFERENCES public.resort_staff(id) ON DELETE SET NULL,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
+
+-- ==========================================
+-- 12. MISC TABLES (BILLING, FEEDBACK, WEATHER)
+-- ==========================================
+CREATE TABLE IF NOT EXISTS public.billing_invoices (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  booking_id UUID REFERENCES public.bookings(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL,
+  amount DECIMAL(10, 2) NOT NULL,
+  status TEXT DEFAULT 'unpaid',
+  due_date TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+CREATE TABLE IF NOT EXISTS public.role_promotion_requests (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id TEXT NOT NULL,
+  requested_role TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  notes TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+CREATE TABLE IF NOT EXISTS public.website_feedback (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id TEXT,
+  rating INTEGER,
+  comments TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+CREATE TABLE IF NOT EXISTS public.weather_triggers (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  hotel_id UUID REFERENCES public.hotels(id) ON DELETE CASCADE,
+  condition TEXT NOT NULL,
+  action TEXT NOT NULL,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
