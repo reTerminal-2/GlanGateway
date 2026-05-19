@@ -51,7 +51,7 @@ router.get("/google", (req: Request, res: Response) => {
   res.cookie("oauth_state", state, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    sameSite: process.env.NODE_ENV === "production" ? "strict" : "lax",
+    sameSite: "lax", // Changed to lax to allow Google OAuth redirect to pass the cookie back
     maxAge: 10 * 60 * 1000, // 10 minutes
     path: "/",
   });
