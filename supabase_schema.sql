@@ -217,3 +217,37 @@ CREATE TABLE IF NOT EXISTS public.verification_documents (
   status TEXT DEFAULT 'pending',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
+
+-- ==========================================
+-- 11. STAFF & MAINTENANCE TABLES
+-- ==========================================
+CREATE TABLE IF NOT EXISTS public.resort_staff (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  hotel_id UUID REFERENCES public.hotels(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  status TEXT DEFAULT 'active',
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+CREATE TABLE IF NOT EXISTS public.housekeeping_tasks (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  hotel_id UUID REFERENCES public.hotels(id) ON DELETE CASCADE,
+  room_id UUID REFERENCES public.rooms(id) ON DELETE CASCADE,
+  staff_id UUID REFERENCES public.resort_staff(id) ON DELETE SET NULL,
+  task_type TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  notes TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+CREATE TABLE IF NOT EXISTS public.housekeeping_maintenance (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  hotel_id UUID REFERENCES public.hotels(id) ON DELETE CASCADE,
+  room_id UUID REFERENCES public.rooms(id) ON DELETE CASCADE,
+  issue_description TEXT NOT NULL,
+  status TEXT DEFAULT 'reported',
+  reported_by TEXT NOT NULL,
+  resolved_by UUID REFERENCES public.resort_staff(id) ON DELETE SET NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
