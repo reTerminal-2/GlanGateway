@@ -303,7 +303,7 @@ CREATE TABLE IF NOT EXISTS public.weather_triggers (
 -- ==========================================
 CREATE TABLE IF NOT EXISTS public.reports (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  reporter_id TEXT REFERENCES public.users(id) ON DELETE CASCADE,
+  reporter_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
   reported_item_id TEXT NOT NULL,
   reported_item_type TEXT NOT NULL,
   reason TEXT NOT NULL,
@@ -312,7 +312,7 @@ CREATE TABLE IF NOT EXISTS public.reports (
   priority TEXT DEFAULT 'medium', -- 'low', 'medium', 'high', 'urgent'
   admin_notes TEXT,
   resolved_at TIMESTAMP WITH TIME ZONE,
-  resolved_by TEXT REFERENCES public.users(id) ON DELETE SET NULL,
+  resolved_by UUID REFERENCES public.users(id) ON DELETE SET NULL,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
