@@ -119,3 +119,24 @@ USING (bucket_id = 'resort-images');
 CREATE POLICY "Auth Insert" 
 ON storage.objects FOR INSERT 
 WITH CHECK (bucket_id = 'resort-images');
+
+-- ==========================================
+-- 6. RESORT OWNER APPLICATIONS TABLE
+-- ==========================================
+CREATE TABLE IF NOT EXISTS public.resort_owner_applications (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id TEXT NOT NULL,
+  status TEXT DEFAULT 'pending', -- 'pending', 'approved', 'rejected'
+  dti_permit_url TEXT,
+  municipal_engineering_cert_url TEXT,
+  municipal_health_cert_url TEXT,
+  menro_cert_url TEXT,
+  bfp_permit_url TEXT,
+  business_permit_url TEXT,
+  national_id_url TEXT,
+  rejection_reason TEXT,
+  reviewed_by TEXT,
+  reviewed_at TIMESTAMP WITH TIME ZONE,
+  submitted_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
