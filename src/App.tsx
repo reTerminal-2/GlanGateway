@@ -40,6 +40,7 @@ import { AdminAuthProvider } from "./contexts/AdminAuthContext";
 import AdminLayout from "./layouts/AdminLayout";
 import ApplyResortOwner from "./pages/ApplyResortOwner";
 import ManageFrontDesk from "./pages/ManageFrontDesk";
+import AdminApplicationReview from "./pages/AdminApplicationReview";
 
 const App = () => {
   return (
@@ -248,6 +249,10 @@ const App = () => {
               <Route
                 path="resort-reports"
                 element={<ResortReports />}
+              />
+              <Route
+                path="applications"
+                element={<AdminApplicationReview />}
               />
             </Route>
 

@@ -416,7 +416,7 @@ const AdminManagement = () => {
                 {recentPromotions.length} recent promotion{recentPromotions.length !== 1 ? 's' : ''}
               </Badge>
             )}
-            <Link to="/admin/applications">
+            <Link to="/admin-dashboard/applications">
               <Button className="bg-blue-600 hover:bg-blue-700">
                 <FileText className="w-4 h-4 mr-2" />
                 Review Applications

@@ -57,6 +57,14 @@ const AdminReports: React.FC = () => {
   const [adminNotes, setAdminNotes] = useState<string>("");
   const queryClient = useQueryClient();
 
+  React.useEffect(() => {
+    if (selectedReport) {
+      setAdminNotes(selectedReport.adminNotes || "");
+    } else {
+      setAdminNotes("");
+    }
+  }, [selectedReport]);
+
   const { data: reportsData, isLoading, error } = useQueryWithLoading(
     ["reports", filter],
     () => fetchReports(1, 50, filter !== "all" ? filter : undefined),
