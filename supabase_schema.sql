@@ -111,11 +111,13 @@ VALUES ('resort-images', 'resort-images', true)
 ON CONFLICT (id) DO NOTHING;
 
 -- Storage Policy: Allow public read access to images
+DROP POLICY IF EXISTS "Public Access" ON storage.objects;
 CREATE POLICY "Public Access" 
 ON storage.objects FOR SELECT 
 USING (bucket_id = 'resort-images');
 
 -- Storage Policy: Allow authenticated insert access
+DROP POLICY IF EXISTS "Auth Insert" ON storage.objects;
 CREATE POLICY "Auth Insert" 
 ON storage.objects FOR INSERT 
 WITH CHECK (bucket_id = 'resort-images');
