@@ -140,3 +140,52 @@ CREATE TABLE IF NOT EXISTS public.resort_owner_applications (
   submitted_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
 );
+
+-- ==========================================
+-- 7. AMENITIES & SLOTS TABLE
+-- ==========================================
+CREATE TABLE IF NOT EXISTS public.amenities (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  hotel_id UUID REFERENCES public.hotels(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  price DECIMAL(10, 2) DEFAULT 0,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+CREATE TABLE IF NOT EXISTS public.amenity_slots (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  amenity_id UUID REFERENCES public.amenities(id) ON DELETE CASCADE,
+  start_time TIMESTAMP WITH TIME ZONE NOT NULL,
+  end_time TIMESTAMP WITH TIME ZONE NOT NULL,
+  is_booked BOOLEAN DEFAULT false,
+  booking_id UUID REFERENCES public.bookings(id) ON DELETE SET NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+-- ==========================================
+-- 8. PRICING RULES TABLE
+-- ==========================================
+CREATE TABLE IF NOT EXISTS public.pricing_rules (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  hotel_id UUID REFERENCES public.hotels(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  start_date TIMESTAMP WITH TIME ZONE NOT NULL,
+  end_date TIMESTAMP WITH TIME ZONE NOT NULL,
+  multiplier DECIMAL(5, 2) DEFAULT 1.0,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+-- ==========================================
+-- 9. ROOM BLOCKS TABLE
+-- ==========================================
+CREATE TABLE IF NOT EXISTS public.room_blocks (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  room_id UUID REFERENCES public.rooms(id) ON DELETE CASCADE,
+  start_date TIMESTAMP WITH TIME ZONE NOT NULL,
+  end_date TIMESTAMP WITH TIME ZONE NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
