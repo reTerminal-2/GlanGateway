@@ -1,43 +1,15 @@
 import express, { Request, Response } from "express";
 import multer from "multer";
 import imageService from "../services/imageService";
-import Hotel from "../models/hotel";
-import Booking from "../models/booking";
 import verifyToken from "../middleware/auth";
 import { body } from "express-validator";
 import { HotelType } from "../types";
-import path from "path";
-import fs from "fs";
 import crypto from "crypto";
 import { supabaseAdmin } from "../core/supabase";
 
-// Local storage configuration for fallback
-const localUploadDir = path.join(__dirname, "..", "..", "uploads");
-
-// Ensure upload directory exists
-if (!fs.existsSync(localUploadDir)) {
-  fs.mkdirSync(localUploadDir, { recursive: true });
-}
-
-const localStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, localUploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueName = `${crypto.randomUUID()}${path.extname(file.originalname)}`;
-    cb(null, uniqueName);
-  },
-});
-
-const localUpload = multer({
-  storage: localStorage,
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
-  },
-});
-
 const router = express.Router();
 
+// Enforce strictly memoryStorage for cloud serverless environments
 const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
